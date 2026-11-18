@@ -9,7 +9,7 @@ healthRouter.get('/', async (_req: Request, res: Response, next: NextFunction) =
     res.status(200).json({
       status: 'ok',
       service: 'finshield-ai-backend',
-      phase: 'Phase 2 - Auth, RBAC, Maker-Checker & Audit Log',
+      phase: 'Phase 3 - Invoice Upload, OCR/AI Extraction & Human Verification',
       timestamp: new Date().toISOString(),
       database,
     });

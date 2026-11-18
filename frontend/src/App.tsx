@@ -4,6 +4,8 @@ import { ProtectedRoute } from './components/ProtectedRoute.tsx';
 import { AuthProvider } from './context/AuthContext.tsx';
 import { ApprovalsPage } from './pages/ApprovalsPage.tsx';
 import { AuditLogPage } from './pages/AuditLogPage.tsx';
+import { InvoicesPage } from './pages/InvoicesPage.tsx';
+import { InvoiceVerifyPage } from './pages/InvoiceVerifyPage.tsx';
 import { LoginPage } from './pages/LoginPage.tsx';
 import { OverviewPage } from './pages/OverviewPage.tsx';
 import { PlaceholderModulePage } from './pages/PlaceholderModulePage.tsx';
@@ -32,18 +34,8 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/invoices"
-              element={
-                <ProtectedRoute allowedRoles={['AP_EMPLOYEE', 'FINANCE_MANAGER', 'ADMIN']}>
-                  <PlaceholderModulePage
-                    title="Invoice Upload & OCR Extraction"
-                    description="Invoice upload, Tesseract + LLM extraction, and confidence verification."
-                    scheduledPhase="Phase 3"
-                  />
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/invoices" element={<InvoicesPage />} />
+            <Route path="/invoices/:id" element={<InvoiceVerifyPage />} />
             <Route
               path="/purchase-orders"
               element={

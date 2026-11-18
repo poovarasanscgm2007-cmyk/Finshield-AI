@@ -16,7 +16,11 @@ export function DashboardLayout() {
     item.allowedRoles.includes(user.role)
   );
 
-  const currentNav = allowedNavItems.find((item) => item.path === location.pathname);
+  const currentNav =
+    allowedNavItems.find((item) => item.path === location.pathname) ||
+    (location.pathname.startsWith('/invoices/')
+      ? { path: '/invoices', label: 'Invoice Verification' }
+      : undefined);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">

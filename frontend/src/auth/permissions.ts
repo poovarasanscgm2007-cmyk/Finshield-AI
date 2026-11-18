@@ -82,8 +82,14 @@ export const SIDEBAR_NAV_ITEMS: NavItemConfig[] = [
   {
     path: '/invoices',
     label: 'Invoices',
-    allowedRoles: ['AP_EMPLOYEE', 'FINANCE_MANAGER', 'ADMIN'],
-    isPlaceholder: true,
+    allowedRoles: [
+      'AP_EMPLOYEE',
+      'PROCUREMENT_EMPLOYEE',
+      'WAREHOUSE_EMPLOYEE',
+      'FINANCE_MANAGER',
+      'ADMIN',
+    ],
+    isPlaceholder: false,
   },
   {
     path: '/purchase-orders',

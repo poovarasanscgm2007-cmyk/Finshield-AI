@@ -6,6 +6,7 @@ import { approvalsRouter } from './routes/approvals.ts';
 import { auditLogRouter } from './routes/auditLog.ts';
 import { authRouter } from './routes/auth.ts';
 import { healthRouter } from './routes/health.ts';
+import { invoicesRouter } from './routes/invoices.ts';
 import { purchaseOrdersRouter } from './routes/purchaseOrders.ts';
 
 export function createApiApp(): Express {
@@ -24,10 +25,11 @@ export function createApiApp(): Express {
   app.use('/api/health', healthRouter);
   app.use('/api/auth', authRouter);
 
-  // Protected Phase 2 FINSHIELD GUARD routes
+  // Protected Phase 2 & 3 routes
   app.use('/api/approvals', approvalsRouter);
   app.use('/api/purchase-orders', purchaseOrdersRouter);
   app.use('/api/audit-log', auditLogRouter);
+  app.use('/api/invoices', invoicesRouter);
 
   return app;
 }
