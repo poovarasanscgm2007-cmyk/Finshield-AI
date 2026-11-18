@@ -1,0 +1,48 @@
+{
+  "is_sample_data": true,
+  "label": "SAMPLE DATA - ABC Manufacturing Demo Scenario",
+  "buyer": {
+    "company": "ABC Manufacturing (Sample)",
+    "gstin": "27AABCA1234B1ZH",
+    "state_code": "27"
+  },
+  "suppliers": [
+    {
+      "supplier_code": "SUP-A",
+      "name": "Supplier A - Timber & Wood Traders (Sample)",
+      "gstin": "27AABCS5678C1Z9",
+      "bank_identifier": "HDFC0001234-ACCT-998877-SAMPLE"
+    },
+    {
+      "supplier_code": "SUP-B",
+      "name": "Supplier B - Deccan Packaging & Crates (Sample)",
+      "gstin": "29AABCB9012D1Z0",
+      "bank_identifier": "HDFC0001234-ACCT-998877-SAMPLE"
+    }
+  ],
+  "demo_records": {
+    "po": {
+      "po_number": "PO-101",
+      "item": "Industrial Hardwood Timber (Sample)",
+      "original_quantity_kg": 100,
+      "original_unit_price_inr": 500,
+      "modified_unit_price_inr": 700,
+      "modified_by": "Employee 102 (EMP-102)",
+      "approval_id": null
+    },
+    "grn": {
+      "grn_number": "GRN-101",
+      "quantity_received_kg": 80
+    },
+    "invoice": {
+      "invoice_number": "INV-101",
+      "quantity_billed_kg": 100,
+      "unit_price_inr": 500,
+      "subtotal_inr": 50000,
+      "cgst_inr": 4500,
+      "sgst_inr": 4500,
+      "total_inr": 59000,
+      "present_in_gstr2b": false
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "FINSHIELD AI",
+  "description": "AI-powered Accounts Payable Risk & GST Compliance Platform for Indian businesses.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
