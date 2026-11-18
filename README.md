@@ -4,143 +4,113 @@
 
 AI-powered Accounts Payable (AP) Risk & GST Compliance Platform for Indian businesses.
 
-> **Sample Data Notice:** All seeded records in Phase 1 belong to the fictional company **ABC Manufacturing (Sample)** and are marked `is_sample_data = TRUE`.
+---
+
+## Sample data
+
+All seeded records belong to the fictional company **ABC Manufacturing (Sample)** and are marked `is_sample_data = TRUE`.
+
+### Demo Logins (Sample Users)
+
+| Employee Code | Name | Role | Email | Demo Password |
+| :--- | :--- | :--- | :--- | :--- |
+| `EMP-101` | Aarav Mehta (Sample AP Employee) | `AP_EMPLOYEE` | `ap.employee@abcmfg.sample` | `SamplePass@101` |
+| `EMP-102` | Employee 102 | `PROCUREMENT_EMPLOYEE` | `employee102@abcmfg.sample` | `SamplePass@102` |
+| `EMP-103` | Rohan Verma (Sample Warehouse Employee) | `WAREHOUSE_EMPLOYEE` | `warehouse@abcmfg.sample` | `SamplePass@103` |
+| `EMP-104` | Priya Nair (Sample Finance Manager) | `FINANCE_MANAGER` | `finance.manager@abcmfg.sample` | `SamplePass@104` |
+| `EMP-105` | Vikram Rao (Sample Admin) | `ADMIN` | `admin@abcmfg.sample` | `SamplePass@105` |
 
 ---
 
 ## Folder Structure
 
-- `/backend` — Node.js + Express + TypeScript API server (`GET /api/health`, CORS, dotenv, error handling)
+- `/backend` — Node.js + Express + TypeScript API server (Auth, RBAC, Maker-Checker Approvals, PO Price Change Guard, Hash-Chained Audit Log)
 - `/frontend` — React + TypeScript + Vite + Tailwind CSS v4 frontend
-- `/database` — PostgreSQL SQL migrations (`migrations/001_initial_schema.sql`), migration runner (`migrate.ts`), and sample seed script (`seed.ts`)
+- `/database` — PostgreSQL SQL migrations (`001_initial_schema.sql`, `002_phase2_guard_and_audit.sql`), migration runner (`migrate.ts`), and sample seed script (`seed.ts`)
 - `/sample-data` — Reference sample scenario data (`demo_scenario.json`)
 - `/docs` — Schema and architecture documentation (`schema.md`)
 
 ---
 
-## Prerequisites
-
-- **Node.js** >= 20
-- **PostgreSQL** >= 15
-
----
-
-## Setup & Installation
+## Setup, Migration, Seed & Run
 
 ### 1. Configure Environment Variables
-
-Copy `.env.example` to `.env` (and/or `backend/.env`) and set your PostgreSQL connection string:
 
 ```bash
 cp .env.example .env
 cp backend/.env.example backend/.env
 ```
 
-Update `DATABASE_URL` in `.env` and `backend/.env`, for example:
-
-```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/finshield_ai"
-JWT_SECRET="replace-with-strong-random-secret"
-LLM_API_KEY="YOUR_API_KEY"
-PORT=4000
-```
-
-Create the PostgreSQL database if it does not exist yet:
-
-```bash
-createdb finshield_ai
-```
+Set `DATABASE_URL`, `JWT_SECRET`, `LLM_API_KEY`, and `PORT` in `.env` and `backend/.env`.
 
 ### 2. Install Dependencies
 
-Install dependencies for backend and frontend (or at the project root for the combined preview):
-
 ```bash
-# Root (optional unified workspace)
 npm install
-
-# Backend
 cd backend && npm install && cd ..
-
-# Frontend
 cd frontend && npm install && cd ..
 ```
 
-### 3. Run Database Migrations
+### 3. Migrate & Seed
 
 ```bash
-cd backend && npm run migrate
+npm run migrate
+npm run seed
 ```
 
-*(Or from project root: `npm run migrate`)*
+### 4. Run Backend & Frontend
 
-### 4. Seed the Sample Demo Scenario (ABC Manufacturing)
-
+**Separate dev servers:**
 ```bash
-cd backend && npm run seed
-```
-
-*(Or from project root: `npm run seed`)*
-
-### 5. Run Backend & Frontend
-
-**Option A — Run Backend and Frontend Separately:**
-
-Terminal 1 (Backend on port `4000`):
-```bash
+# Terminal 1 (Backend on port 4000)
 cd backend && npm run dev
-```
 
-Terminal 2 (Frontend on port `5173`, proxying `/api` to `localhost:4000`):
-```bash
+# Terminal 2 (Frontend on port 5173)
 cd frontend && npm run dev
 ```
 
-**Option B — Unified Preview Server (Port `3000`):**
-
+**Unified preview server (port 3000):**
 ```bash
 npm run dev
 ```
 
+### 5. Run Tests
+
+```bash
+npm test
+```
+
 ---
 
-## Verify Health Check & Seed Data
+## Verify Phase 2 via Curl
 
-1. Open `http://localhost:5173` (or `http://localhost:3000`) in your browser — the placeholder home page calls `GET /api/health` and displays backend & PostgreSQL connectivity along with the **Sample data** banner.
-2. You can also check the backend API directly:
-   ```bash
-   curl http://localhost:4000/api/health
-   ```
-3. Verify the seeded demo records in PostgreSQL using `psql`:
-   ```sql
-   SELECT
-     po.po_number,
-     po.original_total,
-     po.current_total,
-     po.status AS po_status,
-     pl.original_unit_price,
-     pl.current_unit_price,
-     pch.field AS changed_field,
-     pch.old_value,
-     pch.new_value,
-     u.name AS changed_by_user,
-     pch.approval_id,
-     g.grn_number,
-     gl.quantity_received,
-     i.invoice_number,
-     il.quantity AS invoiced_qty,
-     il.unit_price AS invoiced_unit_price,
-     i.total AS invoice_total,
-     s.name AS supplier_name,
-     s.bank_identifier
-   FROM purchase_orders po
-   JOIN suppliers s ON s.id = po.supplier_id
-   JOIN po_lines pl ON pl.po_id = po.id
-   LEFT JOIN po_change_history pch ON pch.po_id = po.id
-   LEFT JOIN users u ON u.id = pch.changed_by
-   LEFT JOIN grns g ON g.po_id = po.id
-   LEFT JOIN grn_lines gl ON gl.grn_id = g.id
-   LEFT JOIN invoices i ON i.po_id = po.id
-   LEFT JOIN invoice_lines il ON il.invoice_id = i.id
-   WHERE po.po_number = 'PO-101';
-   ```
+```bash
+# 1. Login as Employee 102 (Procurement)
+EMP_TOKEN=$(curl -s -X POST http://localhost:4000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"employee102@abcmfg.sample","password":"SamplePass@102"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.token)")
+
+# 2. Request PO-101 price change (500 -> 700) — creates PENDING approval
+APPROVAL_ID=$(curl -s -X PUT http://localhost:4000/api/purchase-orders/1/price \
+  -H "Authorization: Bearer $EMP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"newUnitPrice":700,"reason":"Test price change request"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.approval.id)")
+
+# 3. Maker-checker block: Employee 102 tries to approve own request (returns 403)
+curl -i -X POST http://localhost:4000/api/approvals/$APPROVAL_ID/approve \
+  -H "Authorization: Bearer $EMP_TOKEN"
+
+# 4. Login as Finance Manager and approve
+FM_TOKEN=$(curl -s -X POST http://localhost:4000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"finance.manager@abcmfg.sample","password":"SamplePass@104"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.token)")
+
+curl -i -X POST http://localhost:4000/api/approvals/$APPROVAL_ID/approve \
+  -H "Authorization: Bearer $FM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"remarks":"Approved by Finance Manager"}'
+
+# 5. Verify hash-chained audit log
+curl -s http://localhost:4000/api/audit-log/verify \
+  -H "Authorization: Bearer $FM_TOKEN"
+```

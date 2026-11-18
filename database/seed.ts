@@ -1,8 +1,9 @@
-import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import path from 'path';
 import { Pool } from 'pg';
 import { fileURLToPath } from 'url';
+import { computeAuditHash, GENESIS_HASH } from '../backend/src/audit/hashChain.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,34 +11,61 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../backend/.env') });
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-function computeAuditHash(
-  prevHash: string,
-  actorId: number | null,
-  action: string,
-  entity: string,
-  entityId: string,
-  payload: Record<string, unknown>,
-  timestampIso: string
-): string {
-  const input = JSON.stringify({
-    prevHash,
-    actorId,
-    action,
-    entity,
-    entityId,
-    payload,
-    timestampIso,
-  });
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
+export const SAMPLE_DEMO_USERS = [
+  {
+    employeeCode: 'EMP-101',
+    name: 'Aarav Mehta (Sample AP Employee)',
+    email: 'ap.employee@abcmfg.sample',
+    password: 'SamplePass@101',
+    role: 'AP_EMPLOYEE',
+    department: 'Accounts Payable',
+  },
+  {
+    employeeCode: 'EMP-102',
+    name: 'Employee 102',
+    email: 'employee102@abcmfg.sample',
+    password: 'SamplePass@102',
+    role: 'PROCUREMENT_EMPLOYEE',
+    department: 'Procurement',
+  },
+  {
+    employeeCode: 'EMP-103',
+    name: 'Rohan Verma (Sample Warehouse Employee)',
+    email: 'warehouse@abcmfg.sample',
+    password: 'SamplePass@103',
+    role: 'WAREHOUSE_EMPLOYEE',
+    department: 'Warehouse',
+  },
+  {
+    employeeCode: 'EMP-104',
+    name: 'Priya Nair (Sample Finance Manager)',
+    email: 'finance.manager@abcmfg.sample',
+    password: 'SamplePass@104',
+    role: 'FINANCE_MANAGER',
+    department: 'Finance',
+  },
+  {
+    employeeCode: 'EMP-105',
+    name: 'Vikram Rao (Sample Admin)',
+    email: 'admin@abcmfg.sample',
+    password: 'SamplePass@105',
+    role: 'ADMIN',
+    department: 'Administration',
+  },
+] as const;
 
-async function seedDatabase(): Promise<void> {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is not set. Please configure .env before seeding.');
+export async function seedDatabase(externalPool?: Pool): Promise<void> {
+  const ownsPool = !externalPool;
+  let pool = externalPool;
+
+  if (!pool) {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL is not set. Please configure .env before seeding.');
+    }
+    pool = new Pool({ connectionString: databaseUrl });
   }
 
-  const pool = new Pool({ connectionString: databaseUrl });
   const client = await pool.connect();
 
   try {
@@ -65,29 +93,33 @@ async function seedDatabase(): Promise<void> {
       RESTART IDENTITY CASCADE;
     `);
 
-    // 1. Seed 5 sample users (one per role, including Employee 102)
-    const usersRes = await client.query<{ id: number; employee_code: string }>(
-      `
-      INSERT INTO users (employee_code, name, email, password_hash, role, department, is_sample_data)
-      VALUES
-        ('EMP-101', 'Aarav Mehta (Sample AP Employee)', 'ap.employee@abcmfg.sample', 'SAMPLE_HASH_NOT_FOR_PROD', 'AP_EMPLOYEE', 'Accounts Payable', TRUE),
-        ('EMP-102', 'Employee 102', 'employee102@abcmfg.sample', 'SAMPLE_HASH_NOT_FOR_PROD', 'PROCUREMENT_EMPLOYEE', 'Procurement', TRUE),
-        ('EMP-103', 'Rohan Verma (Sample Warehouse Employee)', 'warehouse@abcmfg.sample', 'SAMPLE_HASH_NOT_FOR_PROD', 'WAREHOUSE_EMPLOYEE', 'Warehouse', TRUE),
-        ('EMP-104', 'Priya Nair (Sample Finance Manager)', 'finance.manager@abcmfg.sample', 'SAMPLE_HASH_NOT_FOR_PROD', 'FINANCE_MANAGER', 'Finance', TRUE),
-        ('EMP-105', 'Vikram Rao (Sample Admin)', 'admin@abcmfg.sample', 'SAMPLE_HASH_NOT_FOR_PROD', 'ADMIN', 'Administration', TRUE)
-      RETURNING id, employee_code;
-      `
-    );
+    // 1. Seed 5 sample users (one per role, including Employee 102) with bcrypt-hashed demo passwords
+    const userByCode = new Map<string, number>();
+    for (const u of SAMPLE_DEMO_USERS) {
+      const passwordHash = await bcrypt.hash(u.password, 10);
+      const inserted = await client.query<{ id: number }>(
+        `
+        INSERT INTO users (employee_code, name, email, password_hash, role, department, is_sample_data)
+        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+        RETURNING id;
+        `,
+        [u.employeeCode, u.name, u.email, passwordHash, u.role, u.department]
+      );
+      userByCode.set(u.employeeCode, inserted.rows[0].id);
+    }
 
-    const userByCode = new Map(usersRes.rows.map((u) => [u.employee_code, u.id]));
     const apUserId = userByCode.get('EMP-101')!;
     const emp102Id = userByCode.get('EMP-102')!;
     const warehouseUserId = userByCode.get('EMP-103')!;
 
     // 2. Seed Supplier A and Supplier B sharing the same bank_identifier (Sample data)
-    // GSTINs include valid Mod-36 checksums.
     const sharedBankId = 'HDFC0001234-ACCT-998877-SAMPLE';
-    const suppliersRes = await client.query<{ id: number; supplier_code: string; gstin: string; name: string }>(
+    const suppliersRes = await client.query<{
+      id: number;
+      supplier_code: string;
+      gstin: string;
+      name: string;
+    }>(
       `
       INSERT INTO suppliers (
         supplier_code, name, gstin, pan, state_code, bank_identifier, address, phone, gst_filing_status, is_sample_data
@@ -126,8 +158,8 @@ async function seedDatabase(): Promise<void> {
     const supplierB = suppliersRes.rows.find((s) => s.supplier_code === 'SUP-B')!;
 
     // 3. Seed PO-101 for ABC Manufacturing (sample):
-    // Original: 100 kg wood @ Rs 500/kg = Rs 50,000.00 subtotal (Rs 59,000.00 incl. 18% GST).
-    // Modified price: Rs 500/kg -> Rs 700/kg => current subtotal Rs 70,000.00 (Rs 82,600.00 incl. 18% GST).
+    // Original: 100 kg wood @ Rs 500/kg = Rs 50,000.00 subtotal.
+    // Unapproved modification: Rs 500/kg -> Rs 700/kg by Employee 102, no approval record.
     const buyerGstin = '27AABCA1234B1ZH';
     const buyerStateCode = '27';
 
@@ -165,21 +197,21 @@ async function seedDatabase(): Promise<void> {
     );
     const po101LineId = poLineRes.rows[0].id;
 
-    // 4. Seed PO-101 price change history: Rs 500 -> Rs 700 by Employee 102, NO approval record (approval_id = NULL)
+    // 4. Seed PO-101 price change history: Rs 500 -> Rs 700 by Employee 102, NO approval record (status = UNAPPROVED)
     await client.query(
       `
       INSERT INTO po_change_history (
-        po_id, po_line_id, changed_by, changed_at, field, old_value, new_value, approval_id, reason, is_sample_data
+        po_id, po_line_id, changed_by, changed_at, field, old_value, new_value, approval_id, status, reason, is_sample_data
       )
       VALUES (
-        $1, $2, $3, NOW() - INTERVAL '2 days', 'unit_price', '500.00', '700.00', NULL,
+        $1, $2, $3, NOW() - INTERVAL '2 days', 'unit_price', '500.00', '700.00', NULL, 'UNAPPROVED',
         'Sample unapproved price modification from Rs 500/kg to Rs 700/kg by Employee 102', TRUE
       );
       `,
       [po101Id, po101LineId, emp102Id]
     );
 
-    // 5. Seed GRN-101 for PO-101: 80 kg received (20 kg short of 100 kg billed)
+    // 5. Seed GRN-101 for PO-101: 80 kg received
     const grnRes = await client.query<{ id: number }>(
       `
       INSERT INTO grns (
@@ -206,7 +238,7 @@ async function seedDatabase(): Promise<void> {
       [grn101Id, po101LineId]
     );
 
-    // 6. Seed INV-101: 100 kg billed @ Rs 500/kg (same state 27 => CGST 9% + SGST 9%)
+    // 6. Seed INV-101: 100 kg billed @ Rs 500/kg
     const inv101Res = await client.query<{ id: number }>(
       `
       INSERT INTO invoices (
@@ -241,7 +273,6 @@ async function seedDatabase(): Promise<void> {
     );
 
     // 7. Seed 9 historical invoices for Supplier A (INV-091..INV-099) with repeated extra charges
-    // Includes Rs 500, Rs 700, Rs 1000 extra charges across past invoices + GSTR-2B entries for them
     const historicalInvoices = [
       { num: 'INV-091', norm: 'INV091', daysAgo: 90, qty: 60, price: 480, extra: 500, extraLabel: 'Unloading & Handling Surcharge (Sample)' },
       { num: 'INV-092', norm: 'INV092', daysAgo: 80, qty: 80, price: 485, extra: 700, extraLabel: 'Special Packaging Fee (Sample)' },
@@ -315,7 +346,6 @@ async function seedDatabase(): Promise<void> {
         ]
       );
 
-      // Insert historical invoices into sample GSTR-2B (INV-101 is intentionally omitted)
       await client.query(
         `
         INSERT INTO gstr2b_records (
@@ -343,7 +373,6 @@ async function seedDatabase(): Promise<void> {
       );
     }
 
-    // Also add 1 sample GSTR-2B record for Supplier B (inter-state IGST) for completeness
     await client.query(
       `
       INSERT INTO gstr2b_records (
@@ -360,7 +389,7 @@ async function seedDatabase(): Promise<void> {
       [supplierB.gstin, supplierB.name]
     );
 
-    // 8. Seed default risk_rules_config (configurable rule weights and thresholds)
+    // 8. Seed default risk_rules_config
     await client.query(`
       INSERT INTO risk_rules_config (rule_code, rule_name, description, weight, threshold, is_active, is_sample_data)
       VALUES
@@ -376,54 +405,81 @@ async function seedDatabase(): Promise<void> {
         ('SUPPLIER_FILING_RISK', 'Supplier GST Filing Status Risk', 'Flags suppliers with delayed or suspended GST return filing status', 15.00, 1.0000, TRUE, TRUE);
     `);
 
-    // 9. Seed initial hash-chained audit_log entries
+    // 9. Seed initial hash-chained audit_log entries using canonical SHA-256 chain
     const ts1 = new Date().toISOString();
     const payload1 = {
-      note: 'Phase 1 sample dataset initialized for ABC Manufacturing (Sample)',
+      note: 'Sample dataset initialized for ABC Manufacturing (Sample)',
       entities: ['PO-101', 'GRN-101', 'INV-101', 'SUP-A', 'SUP-B'],
       is_sample_data: true,
     };
-    const hash1 = computeAuditHash('GENESIS', null, 'SEED_INITIALIZED', 'SYSTEM', 'PHASE_1', payload1, ts1);
+    const hash1 = computeAuditHash({
+      prevHash: GENESIS_HASH,
+      actorId: null,
+      action: 'SEED_INITIALIZED',
+      entity: 'SYSTEM',
+      entityId: 'PHASE_2',
+      payload: payload1,
+      createdAtIso: ts1,
+    });
 
     await client.query(
       `
       INSERT INTO audit_log (actor_id, action, entity, entity_id, payload, prev_hash, hash, is_sample_data, created_at)
-      VALUES (NULL, 'SEED_INITIALIZED', 'SYSTEM', 'PHASE_1', $1::jsonb, 'GENESIS', $2, TRUE, $3);
+      VALUES (NULL, 'SEED_INITIALIZED', 'SYSTEM', 'PHASE_2', $1::jsonb, $2, $3, TRUE, $4::timestamptz);
       `,
-      [JSON.stringify(payload1), hash1, ts1]
+      [JSON.stringify(payload1), GENESIS_HASH, hash1, ts1]
     );
 
-    const ts2 = new Date().toISOString();
+    const ts2 = new Date(Date.now() + 1).toISOString();
     const payload2 = {
       po_number: 'PO-101',
       field: 'unit_price',
       old_value: '500.00',
       new_value: '700.00',
       approval_id: null,
+      status: 'UNAPPROVED',
       is_sample_data: true,
     };
-    const hash2 = computeAuditHash(hash1, emp102Id, 'PO_MODIFIED', 'purchase_orders', String(po101Id), payload2, ts2);
+    const hash2 = computeAuditHash({
+      prevHash: hash1,
+      actorId: emp102Id,
+      action: 'PO_MODIFIED',
+      entity: 'purchase_orders',
+      entityId: String(po101Id),
+      payload: payload2,
+      createdAtIso: ts2,
+    });
 
     await client.query(
       `
       INSERT INTO audit_log (actor_id, action, entity, entity_id, payload, prev_hash, hash, is_sample_data, created_at)
-      VALUES ($1, 'PO_MODIFIED', 'purchase_orders', $2, $3::jsonb, $4, $5, TRUE, $6);
+      VALUES ($1, 'PO_MODIFIED', 'purchase_orders', $2, $3::jsonb, $4, $5, TRUE, $6::timestamptz);
       `,
       [emp102Id, String(po101Id), JSON.stringify(payload2), hash1, hash2, ts2]
     );
 
     await client.query('COMMIT');
-    console.log('Seed completed successfully: ABC Manufacturing sample scenario loaded.');
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
-    await pool.end();
+    if (ownsPool) {
+      await pool.end();
+    }
   }
 }
 
-seedDatabase().catch((err) => {
-  console.error('Seed failed:', err);
-  process.exit(1);
-});
+const isMainModule =
+  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
+
+if (isMainModule) {
+  seedDatabase()
+    .then(() => {
+      console.log('Seed completed successfully: ABC Manufacturing sample scenario loaded with bcrypt passwords.');
+    })
+    .catch((err) => {
+      console.error('Seed failed:', err);
+      process.exit(1);
+    });
+}
