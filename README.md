@@ -8,7 +8,7 @@ AI-powered Accounts Payable (AP) Risk & GST Compliance Platform for Indian busin
 
 ## Sample data
 
-All seeded records belong to the fictional company **ABC Manufacturing (Sample)** and are marked `is_sample_data = TRUE`.
+All seeded records belong to the fictional company **ABC Manufacturing (Sample)** and are marked `is_sample_data = TRUE`. A visible **Sample data** notice is displayed throughout the application.
 
 ### Demo Logins (Sample Users)
 
@@ -20,15 +20,20 @@ All seeded records belong to the fictional company **ABC Manufacturing (Sample)*
 | `EMP-104` | Priya Nair (Sample Finance Manager) | `FINANCE_MANAGER` | `finance.manager@abcmfg.sample` | `SamplePass@104` |
 | `EMP-105` | Vikram Rao (Sample Admin) | `ADMIN` | `admin@abcmfg.sample` | `SamplePass@105` |
 
+Sample PDFs for upload testing are in `/sample-data/invoices/`:
+- `INV-101-sample.pdf` (digital PDF with embedded text)
+- `INV-098-sample.pdf` (digital PDF with extra charges)
+- `INV-099-scanned-sample.pdf` (scanned image PDF routed through Tesseract OCR)
+
 ---
 
 ## Folder Structure
 
-- `/backend` — Node.js + Express + TypeScript API server (Auth, RBAC, Maker-Checker Approvals, PO Price Change Guard, Hash-Chained Audit Log)
-- `/frontend` — React + TypeScript + Vite + Tailwind CSS v4 frontend
-- `/database` — PostgreSQL SQL migrations (`001_initial_schema.sql`, `002_phase2_guard_and_audit.sql`), migration runner (`migrate.ts`), and sample seed script (`seed.ts`)
-- `/sample-data` — Reference sample scenario data (`demo_scenario.json`)
-- `/docs` — Schema and architecture documentation (`schema.md`)
+- `/backend` — Node.js + Express + TypeScript API server (Auth, RBAC, OCR/AI Extraction, 3-Way Matching, Duplicate Detection, GST & Risk Pipeline, Investigation Workflow, AI Copilot, Supplier Graph & Scorecards, Hash-Chained Audit Log)
+- `/frontend` — React + TypeScript + Vite + Tailwind CSS v4 + Recharts + `react-force-graph-2d`
+- `/database` — PostgreSQL SQL migrations (`001`–`005`), migration runner (`migrate.ts`), and sample seed script (`seed.ts`)
+- `/sample-data` — Reference scenario JSON and sample invoice PDFs (`/sample-data/invoices`)
+- `/docs` — `DEMO_SCRIPT.md`, `LIMITATIONS.md`, `ARCHITECTURE.md`, `SMOKE_TEST.md`, `schema.md`
 
 ---
 
@@ -47,20 +52,24 @@ Set `DATABASE_URL`, `JWT_SECRET`, `LLM_API_KEY`, and `PORT` in `.env` and `backe
 
 ```bash
 npm install
-cd backend && npm install && cd ..
-cd frontend && npm install && cd ..
 ```
 
-### 3. Migrate & Seed
+### 3. Migrate, Seed & Reset Demo Data
 
 ```bash
 npm run migrate
 npm run seed
+npm run reset-demo
 ```
 
-### 4. Run Backend & Frontend
+### 4. Start the Application
 
-**Separate dev servers:**
+**Unified preview server (port 3000 — serves API + Frontend):**
+```bash
+npm run dev
+```
+
+**Or separate dev servers:**
 ```bash
 # Terminal 1 (Backend on port 4000)
 cd backend && npm run dev
@@ -69,48 +78,32 @@ cd backend && npm run dev
 cd frontend && npm run dev
 ```
 
-**Unified preview server (port 3000):**
-```bash
-npm run dev
-```
+---
 
-### 5. Run Tests
+## Test & Verification Commands
+
+Run each verification suite sequentially:
 
 ```bash
-npm test
+npm run reset-demo   # Restore clean sample data & evaluate INV-101
+npm test             # Unit & DB integration tests (phases 2-6)
+npm run smoke        # End-to-end API smoke test across RBAC roles
+npm run demo-test    # Expected-output verification for all 10 planted demo assertions
 ```
 
 ---
 
-## Verify Phase 2 via Curl
+## 10-Step Demo Order
 
-```bash
-# 1. Login as Employee 102 (Procurement)
-EMP_TOKEN=$(curl -s -X POST http://localhost:4000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"employee102@abcmfg.sample","password":"SamplePass@102"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.token)")
+See `/docs/DEMO_SCRIPT.md` or log in as **Admin** / **Finance Manager** and open the **Demo Guide** page (`/demo-guide`):
 
-# 2. Request PO-101 price change (500 -> 700) — creates PENDING approval
-APPROVAL_ID=$(curl -s -X PUT http://localhost:4000/api/purchase-orders/1/price \
-  -H "Authorization: Bearer $EMP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"newUnitPrice":700,"reason":"Test price change request"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.approval.id)")
-
-# 3. Maker-checker block: Employee 102 tries to approve own request (returns 403)
-curl -i -X POST http://localhost:4000/api/approvals/$APPROVAL_ID/approve \
-  -H "Authorization: Bearer $EMP_TOKEN"
-
-# 4. Login as Finance Manager and approve
-FM_TOKEN=$(curl -s -X POST http://localhost:4000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"finance.manager@abcmfg.sample","password":"SamplePass@104"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.token)")
-
-curl -i -X POST http://localhost:4000/api/approvals/$APPROVAL_ID/approve \
-  -H "Authorization: Bearer $FM_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"remarks":"Approved by Finance Manager"}'
-
-# 5. Verify hash-chained audit log
-curl -s http://localhost:4000/api/audit-log/verify \
-  -H "Authorization: Bearer $FM_TOKEN"
-```
+1. Role-based login (`AP Employee` / Quick Login) & RBAC verification
+2. Upload sample invoice (`INV-101-sample.pdf` or scanned `INV-099-scanned-sample.pdf`)
+3. Human verification of low-confidence fields & normalized duplicate detection (`INV-101` vs `INV_101`)
+4. 3-way matching (`PO-101` vs `GRN-101` vs `INV-101`: `100` billed vs `80` received -> `ON_HOLD`)
+5. GSTIN checksum, intra-state CGST+SGST check & GSTR-2B mismatch (`Rs 9,000` ITC at risk)
+6. Explainable risk alerts (`HIGH` investigation priority) & Supplier Scorecard (`/suppliers`)
+7. Supplier Relationship Graph (`SHARED_BANK` `XXXX8877` indicator requiring verification) (`/supplier-graph`)
+8. Evidence-linked AI Audit Copilot (`"Why is Supplier A's invoice flagged?"`)
+9. Auto-assigned department investigations & Maker-Checker block (`Employee 102` gets `403`)
+10. Warehouse GRN resolution (`+20 kg`), automatic revalidation, Admin hash-chain audit verify, and Finance Manager human final payment approval

@@ -5,8 +5,10 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Copy,
   Eye,
   FileText,
+  PauseCircle,
   RefreshCw,
   ShieldAlert,
   Upload,
@@ -37,6 +39,11 @@ interface InvoiceListItem {
   is_sample_data: boolean;
   verified_by_name: string | null;
   created_at: string;
+  match_status?: 'MATCHED' | 'MISMATCH' | 'HOLD' | null;
+  match_reasons?: string[] | null;
+  possible_duplicate?: boolean;
+  duplicate_score?: number;
+  duplicate_reasons?: string[];
 }
 
 const MAX_SIZE_BYTES = 10 * 1024 * 1024;
@@ -52,40 +59,76 @@ function formatCurrency(val: string | null): string {
   })}`;
 }
 
-function StatusDisplay({ status }: { status: string }) {
-  if (status === 'VERIFIED') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
-        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        VERIFIED
-      </span>
-    );
-  }
-  if (status === 'EXTRACTED') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-700">
-        <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        EXTRACTED
-      </span>
-    );
-  }
-  if (status === 'NEEDS_VERIFICATION') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        NEEDS_VERIFICATION
-      </span>
-    );
-  }
-  if (status === 'EXTRACTING') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600">
-        <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        EXTRACTING
-      </span>
-    );
-  }
-  return <span className="text-xs font-semibold text-slate-700">{status}</span>;
+export function MatchAndStatusBadges({
+  invoiceStatus,
+  matchStatus,
+  possibleDuplicate,
+  duplicateScore,
+}: {
+  invoiceStatus: string;
+  matchStatus?: string | null;
+  possibleDuplicate?: boolean;
+  duplicateScore?: number;
+}) {
+  const effectiveMatch = matchStatus || (invoiceStatus === 'MATCHED' ? 'MATCHED' : null);
+
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {effectiveMatch === 'MATCHED' && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 whitespace-nowrap">
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          MATCHED
+        </span>
+      )}
+
+      {effectiveMatch === 'MISMATCH' && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-800 whitespace-nowrap">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          MISMATCH
+        </span>
+      )}
+
+      {(effectiveMatch === 'HOLD' || invoiceStatus === 'ON_HOLD') && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800 whitespace-nowrap">
+          <PauseCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          {invoiceStatus === 'ON_HOLD' ? 'ON_HOLD' : 'HOLD'}
+        </span>
+      )}
+
+      {!effectiveMatch && invoiceStatus !== 'ON_HOLD' && (
+        <span
+          className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-semibold whitespace-nowrap ${
+            invoiceStatus === 'VERIFIED' || invoiceStatus === 'PAID'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+              : invoiceStatus === 'NEEDS_VERIFICATION'
+              ? 'border-amber-200 bg-amber-50 text-amber-800'
+              : invoiceStatus === 'EXTRACTED'
+              ? 'border-sky-200 bg-sky-50 text-sky-800'
+              : 'border-slate-200 bg-slate-50 text-slate-700'
+          }`}
+        >
+          {invoiceStatus === 'NEEDS_VERIFICATION' ? (
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          ) : invoiceStatus === 'EXTRACTING' ? (
+            <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          ) : (
+            <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          )}
+          {invoiceStatus}
+        </span>
+      )}
+
+      {possibleDuplicate && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-orange-300 bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-800 whitespace-nowrap">
+          <Copy className="h-3 w-3 shrink-0" aria-hidden="true" />
+          POSSIBLE DUPLICATE
+          {duplicateScore !== undefined && duplicateScore > 0
+            ? ` (${Math.round(duplicateScore * 100)}%)`
+            : ''}
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function InvoicesPage() {
@@ -239,7 +282,9 @@ export function InvoicesPage() {
 
   const filteredInvoices = invoices.filter((inv) => {
     if (statusFilter === 'ALL') return true;
-    return inv.status === statusFilter;
+    if (statusFilter === 'DUPLICATES') return Boolean(inv.possible_duplicate);
+    if (statusFilter === 'MISMATCH') return inv.match_status === 'MISMATCH';
+    return inv.status === statusFilter || inv.match_status === statusFilter;
   });
 
   return (
@@ -253,7 +298,7 @@ export function InvoicesPage() {
               </h2>
               <p className="mt-1 text-sm text-slate-500">
                 Supports embedded-text PDFs, scanned PDFs, PNG, and JPG files up to 10 MB.
-                Low-confidence or missing fields are flagged for human verification.
+                Verifying automatically runs 3-way PO + GRN matching.
               </p>
             </div>
             <span className="font-mono text-xs text-slate-500">
@@ -334,7 +379,10 @@ export function InvoicesPage() {
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
           <span>
             Read-only invoice view. Only <strong className="font-semibold">AP Employee</strong> can
-            upload invoices or verify extracted fields.
+            upload invoices or verify extracted fields.{' '}
+            {user?.role === 'FINANCE_MANAGER'
+              ? 'Finance Manager can also trigger 3-way matching on any invoice.'
+              : ''}
           </span>
         </div>
       )}
@@ -343,31 +391,37 @@ export function InvoicesPage() {
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
-              Invoices Queue &amp; Sample Ledger
+              Invoices Queue, 3-Way Match &amp; Duplicate Flags (Sample Data)
             </h2>
             <p className="mt-0.5 text-sm text-slate-500">
-              All records are sample/prototype data. Click any invoice to inspect extraction confidence and document preview.
+              Click any invoice to view the side-by-side PO / GRN / Invoice comparison, duplicate similarity score, and document preview.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1">
-              {['ALL', 'NEEDS_VERIFICATION', 'EXTRACTED', 'VERIFIED', 'EXTRACTING'].map(
-                (st) => (
-                  <button
-                    key={st}
-                    type="button"
-                    onClick={() => setStatusFilter(st)}
-                    className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
-                      statusFilter === st
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {st}
-                  </button>
-                )
-              )}
+            <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1">
+              {[
+                'ALL',
+                'MATCHED',
+                'MISMATCH',
+                'ON_HOLD',
+                'DUPLICATES',
+                'NEEDS_VERIFICATION',
+                'PENDING_REVIEW',
+              ].map((st) => (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => setStatusFilter(st)}
+                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                    statusFilter === st
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {st}
+                </button>
+              ))}
             </div>
 
             <button
@@ -399,7 +453,7 @@ export function InvoicesPage() {
           <p className="py-8 text-sm text-slate-500">Loading invoices...</p>
         ) : filteredInvoices.length === 0 ? (
           <p className="py-8 text-sm text-slate-500">
-            No invoices match the selected status filter.
+            No invoices match the selected filter.
           </p>
         ) : (
           <div className="mt-4 overflow-x-auto">
@@ -412,8 +466,7 @@ export function InvoicesPage() {
                   <th className="py-2.5 pr-4">PO Ref</th>
                   <th className="py-2.5 pr-4">Date</th>
                   <th className="py-2.5 pr-4 text-right">Total</th>
-                  <th className="py-2.5 pr-4">Extraction</th>
-                  <th className="py-2.5 pr-4">Status</th>
+                  <th className="py-2.5 pr-4">Match / Duplicate Status</th>
                   <th className="py-2.5 text-right">Action</th>
                 </tr>
               </thead>
@@ -422,8 +475,6 @@ export function InvoicesPage() {
                   const supplierDisplay =
                     inv.supplier_name || inv.supplier_name_extracted || 'Unknown / Missing';
                   const poDisplay = inv.po_number || inv.po_reference_extracted || '—';
-                  const missingCount = inv.extraction_confidence?.missingFields?.length ?? 0;
-                  const lowCount = inv.extraction_confidence?.lowConfidenceFields?.length ?? 0;
 
                   return (
                     <tr key={inv.id} className="hover:bg-slate-50">
@@ -434,14 +485,14 @@ export function InvoicesPage() {
                         <span className="block text-xs text-slate-500">
                           {inv.is_historical
                             ? 'Sample Historical'
-                            : inv.original_filename || 'Uploaded Sample'}
+                            : inv.original_filename || 'Sample Data'}
                         </span>
                       </td>
                       <td className="py-3 pr-4 font-mono text-xs text-slate-600">
                         {inv.normalized_invoice_number || '—'}
                       </td>
                       <td className="py-3 pr-4 text-slate-700">
-                        <span className="block max-w-[200px] truncate">{supplierDisplay}</span>
+                        <span className="block max-w-[210px] truncate">{supplierDisplay}</span>
                         {inv.supplier_gstin_extracted && (
                           <span className="block font-mono text-xs text-slate-500">
                             {inv.supplier_gstin_extracted}
@@ -457,25 +508,25 @@ export function InvoicesPage() {
                       <td className="py-3 pr-4 text-right font-mono text-xs font-medium text-slate-900 tabular-nums">
                         {formatCurrency(inv.total)}
                       </td>
-                      <td className="py-3 pr-4 text-xs text-slate-600">
-                        <span className="block font-mono">
-                          {inv.extraction_source || 'SEED'} · {inv.extraction_method || 'DB'}
-                        </span>
-                        {(missingCount > 0 || lowCount > 0) && inv.status !== 'VERIFIED' && (
-                          <span className="block text-amber-700">
-                            {missingCount > 0 ? `${missingCount} missing` : ''}
-                            {missingCount > 0 && lowCount > 0 ? ', ' : ''}
-                            {lowCount > 0 ? `${lowCount} low conf` : ''}
-                          </span>
-                        )}
-                      </td>
                       <td className="py-3 pr-4">
-                        <StatusDisplay status={inv.status} />
-                        {inv.verified_by_name && (
-                          <span className="block text-xs text-slate-500">
-                            by {inv.verified_by_name}
-                          </span>
+                        <MatchAndStatusBadges
+                          invoiceStatus={inv.status}
+                          matchStatus={inv.match_status}
+                          possibleDuplicate={inv.possible_duplicate}
+                          duplicateScore={inv.duplicate_score}
+                        />
+                        {inv.match_reasons && inv.match_reasons.length > 0 && (
+                          <p className="mt-1 max-w-[280px] text-xs text-slate-600">
+                            {inv.match_reasons[0]}
+                          </p>
                         )}
+                        {inv.possible_duplicate &&
+                          inv.duplicate_reasons &&
+                          inv.duplicate_reasons.length > 0 && (
+                            <p className="mt-0.5 max-w-[280px] text-xs text-orange-800">
+                              {inv.duplicate_reasons[0]}
+                            </p>
+                          )}
                       </td>
                       <td className="py-3 text-right">
                         <Link
@@ -483,9 +534,7 @@ export function InvoicesPage() {
                           className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
                         >
                           <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-                          {canUploadOrVerify && inv.status !== 'VERIFIED'
-                            ? 'Verify'
-                            : 'Inspect'}
+                          Inspect
                         </Link>
                       </td>
                     </tr>

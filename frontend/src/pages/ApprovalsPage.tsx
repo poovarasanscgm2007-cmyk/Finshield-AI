@@ -268,7 +268,7 @@ export function ApprovalsPage() {
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
-              Maker-Checker Approval Queue
+              Maker-Checker Approval Queue (Sample Data)
             </h2>
             <p className="mt-0.5 text-sm text-slate-500">
               {canDecideApprovals
@@ -335,6 +335,9 @@ export function ApprovalsPage() {
                   const oldPrice = item.payload?.oldUnitPrice;
                   const newPrice = item.payload?.newUnitPrice;
                   const poNum = item.payload?.poNumber;
+                  const oldBank = item.payload?.oldBankMasked;
+                  const newBank = item.payload?.newBankMasked;
+                  const supCode = item.payload?.supplierCode;
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50">
@@ -354,6 +357,11 @@ export function ApprovalsPage() {
                         {poNum ? (
                           <span className="font-mono text-slate-900 tabular-nums">
                             {String(poNum)}: Rs {String(oldPrice)} → Rs {String(newPrice)}
+                          </span>
+                        ) : item.entity_type === 'SUPPLIER_BANK_CHANGE' && oldBank && newBank ? (
+                          <span className="font-mono text-slate-900 tabular-nums">
+                            {String(supCode || `Supplier #${item.entity_id}`)}: {String(oldBank)} →{' '}
+                            {String(newBank)}
                           </span>
                         ) : (
                           <span>Entity #{item.entity_id}</span>

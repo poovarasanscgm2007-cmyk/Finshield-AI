@@ -272,6 +272,40 @@ export async function seedDatabase(externalPool?: Pool): Promise<void> {
       [inv101Id]
     );
 
+    // 6b. Seed duplicate sample case: INV_101 re-submitted by Supplier A (same normalized_invoice_number INV101)
+    const inv101DupRes = await client.query<{ id: number }>(
+      `
+      INSERT INTO invoices (
+        invoice_number, normalized_invoice_number, irn, supplier_id, po_id, invoice_date,
+        subtotal, cgst, sgst, igst, extra_charges, total, status,
+        extraction_confidence, file_path, original_filename, uploaded_by, is_historical, is_sample_data
+      )
+      VALUES (
+        'INV_101', 'INV101', 'IRN-SAMPLE-2026-INV101-A98F', $1, $2, CURRENT_DATE,
+        50000.00, 4500.00, 4500.00, 0.00, 0.00, 59000.00, 'PENDING_REVIEW',
+        '{"invoice_number": 0.96, "supplier_gstin": 0.96, "quantity": 0.95, "unit_price": 0.96, "total": 0.97}'::jsonb,
+        'sample-data/INV_101-duplicate-sample.pdf', 'INV_101-duplicate-sample (Sample Data).pdf', $3, FALSE, TRUE
+      )
+      RETURNING id;
+      `,
+      [supplierA.id, po101Id, apUserId]
+    );
+    const inv101DupId = inv101DupRes.rows[0].id;
+
+    await client.query(
+      `
+      INSERT INTO invoice_lines (
+        invoice_id, line_number, description, hsn_sac, quantity, unit,
+        unit_price, extra_charge, tax_rate, line_total, is_sample_data
+      )
+      VALUES (
+        $1, 1, 'Industrial Hardwood Timber (Sample)', '4403', 100.000, 'kg',
+        500.00, 0.00, 18.00, 59000.00, TRUE
+      );
+      `,
+      [inv101DupId]
+    );
+
     // 7. Seed 9 historical invoices for Supplier A (INV-091..INV-099) with repeated extra charges
     const historicalInvoices = [
       { num: 'INV-091', norm: 'INV091', daysAgo: 90, qty: 60, price: 480, extra: 500, extraLabel: 'Unloading & Handling Surcharge (Sample)' },
@@ -396,7 +430,7 @@ export async function seedDatabase(externalPool?: Pool): Promise<void> {
         ('QTY_MISMATCH', '3-Way Quantity Mismatch', 'Flags invoice quantity exceeding summed GRN received quantity beyond tolerance %', 25.00, 2.0000, TRUE, TRUE),
         ('PRICE_MISMATCH', '3-Way Unit Price Mismatch', 'Flags invoice unit price deviating from approved PO price beyond tolerance %', 20.00, 2.0000, TRUE, TRUE),
         ('UNAPPROVED_PO_CHANGE', 'Unapproved PO Modification', 'Flags purchase order price or quantity edits lacking an approval record', 25.00, 1.0000, TRUE, TRUE),
-        ('DUPLICATE_INVOICE', 'Possible Duplicate Invoice', 'Flags normalized invoice number, IRN, or composite line similarity matches', 20.00, 0.8000, TRUE, TRUE),
+        ('DUPLICATE_INVOICE', 'Possible Duplicate Invoice', 'Flags normalized invoice number, IRN, or composite line similarity matches', 20.00, 0.6500, TRUE, TRUE),
         ('HISTORICAL_OVERBILLING', 'Historical Extra Charges / Overbilling', 'Flags suppliers with repeated extra charges or unusual price drift across past invoices', 15.00, 3.0000, TRUE, TRUE),
         ('GSTIN_INVALID', 'Invalid GSTIN / Checksum', 'Flags GSTIN format or Mod-36 checksum verification failure', 20.00, 1.0000, TRUE, TRUE),
         ('GST_TAX_TYPE_MISMATCH', 'CGST/SGST vs IGST Mismatch', 'Flags intra-state vs inter-state GST tax head discrepancies', 15.00, 0.0100, TRUE, TRUE),

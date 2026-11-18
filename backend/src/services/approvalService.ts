@@ -2,6 +2,7 @@ import { UserRole } from '../auth/permissions.ts';
 import { getPool, query } from '../db/pool.ts';
 import { HttpError } from '../middleware/errorHandler.ts';
 import { writeAuditLog } from './auditService.ts';
+import { maskBankIdentifier, syncSupplierGraphRisks } from './supplierService.ts';
 
 export interface ApprovalRecord {
   id: number;
@@ -187,7 +188,8 @@ export async function approve(
     } else if (
       (approval.entity_type === 'PO_PRICE_CHANGE' ||
         approval.entity_type === 'PAYMENT_APPROVAL' ||
-        approval.entity_type === 'HIGH_RISK_ITEM') &&
+        approval.entity_type === 'HIGH_RISK_ITEM' ||
+        approval.entity_type === 'SUPPLIER_BANK_CHANGE') &&
       approverRole !== 'FINANCE_MANAGER'
     ) {
       violationAudit = {
@@ -205,6 +207,68 @@ export async function approve(
       };
       await client.query('ROLLBACK');
     } else {
+      // Enforce Phase 5 payment gate if approving a PAYMENT_APPROVAL request
+      if (approval.entity_type === 'PAYMENT_APPROVAL') {
+        const invRes = await client.query<{
+          id: number;
+          po_id: number | null;
+          status: string;
+          risk_level: string;
+          level1_approved_by: number | null;
+        }>('SELECT id, po_id, status, risk_level, level1_approved_by FROM invoices WHERE id = $1 FOR UPDATE', [
+          approval.entity_id,
+        ]);
+        const targetInv = invRes.rows[0];
+        if (!targetInv) {
+          throw new HttpError(404, `Linked Invoice #${approval.entity_id} not found.`);
+        }
+
+        const pendingInvRes = await client.query<{ id: number; issue_type: string; status: string }>(
+          "SELECT id, issue_type, status FROM investigations WHERE invoice_id = $1 AND status <> 'REVALIDATED'",
+          [approval.entity_id]
+        );
+        if (pendingInvRes.rows.length > 0 || targetInv.status !== 'ELIGIBLE_FOR_APPROVAL') {
+          throw new HttpError(
+            409,
+            `Payment blocked: all invoice investigations must be REVALIDATED (invoice status: ${targetInv.status}).`
+          );
+        }
+
+        if (targetInv.po_id) {
+          const poCreatorRes = await client.query<{ changed_by: number }>(
+            'SELECT changed_by FROM po_change_history WHERE po_id = $1',
+            [targetInv.po_id]
+          );
+          if (poCreatorRes.rows.some((r) => Number(r.changed_by) === Number(approverId))) {
+            throw new HttpError(
+              403,
+              'Maker-checker violation: approver cannot be the same user who created a related PO change.'
+            );
+          }
+        }
+
+        const isHighRisk = targetInv.risk_level === 'HIGH' || targetInv.risk_level === 'CRITICAL';
+        if (isHighRisk) {
+          if (!targetInv.level1_approved_by) {
+            throw new HttpError(
+              409,
+              'Multi-level approval required: High-risk invoice requires Level 1 approval from another reviewer first.'
+            );
+          }
+          if (Number(targetInv.level1_approved_by) === Number(approverId)) {
+            throw new HttpError(
+              403,
+              'Maker-checker violation: High-risk invoice requires two different approvers.'
+            );
+          }
+        }
+
+        await client.query(
+          "UPDATE invoices SET status = 'APPROVED', payment_approved_by = $1, payment_approved_at = NOW() WHERE id = $2",
+          [approverId, approval.entity_id]
+        );
+      }
+
       const updatedRes = await client.query<ApprovalRecord>(
         `
         UPDATE approvals
@@ -282,6 +346,49 @@ export async function approve(
           },
           client
         );
+      }
+
+      // Apply supplier bank identifier change ONLY upon Finance Manager approval (maker-checker enforced)
+      if (approval.entity_type === 'SUPPLIER_BANK_CHANGE') {
+        const payload = approval.payload || {};
+        const supplierId = Number(payload.supplierId || approval.entity_id);
+        const newBankIdentifier = String(payload.newBankIdentifier || '').trim();
+        if (!supplierId || !newBankIdentifier) {
+          throw new HttpError(400, 'Approval payload is missing valid supplier bank details.');
+        }
+
+        const supBefore = await client.query<{ bank_identifier: string; supplier_code: string }>(
+          'SELECT bank_identifier, supplier_code FROM suppliers WHERE id = $1 FOR UPDATE',
+          [supplierId]
+        );
+        if (supBefore.rowCount === 0) {
+          throw new HttpError(404, `Supplier #${supplierId} not found.`);
+        }
+
+        const oldMasked = maskBankIdentifier(supBefore.rows[0].bank_identifier);
+        const newMasked = maskBankIdentifier(newBankIdentifier);
+
+        await client.query('UPDATE suppliers SET bank_identifier = $1 WHERE id = $2', [
+          newBankIdentifier,
+          supplierId,
+        ]);
+
+        await writeAuditLog(
+          approverId,
+          'SUPPLIER_BANK_CHANGE_APPLIED',
+          'suppliers',
+          supplierId,
+          {
+            approvalId,
+            supplierCode: supBefore.rows[0].supplier_code,
+            oldBankMasked: oldMasked,
+            newBankMasked: newMasked,
+            approvedBy: approverId,
+          },
+          client
+        );
+
+        await syncSupplierGraphRisks(client);
       }
 
       await writeAuditLog(
@@ -396,7 +503,8 @@ export async function reject(
     } else if (
       (approval.entity_type === 'PO_PRICE_CHANGE' ||
         approval.entity_type === 'PAYMENT_APPROVAL' ||
-        approval.entity_type === 'HIGH_RISK_ITEM') &&
+        approval.entity_type === 'HIGH_RISK_ITEM' ||
+        approval.entity_type === 'SUPPLIER_BANK_CHANGE') &&
       approverRole !== 'FINANCE_MANAGER'
     ) {
       violationAudit = {

@@ -8,13 +8,22 @@ import { env } from '../config/env.ts';
 import { authenticate, AuthenticatedRequest, requireRole } from '../middleware/auth.ts';
 import { HttpError } from '../middleware/errorHandler.ts';
 import { ensureDatabaseBootstrapped } from '../services/bootstrapDb.ts';
+import { detectDuplicatesForInvoice } from '../services/duplicateService.ts';
 import {
   createAndExtractInvoice,
   getInvoiceById,
+  getInvoiceSummaryMetrics,
   listInvoices,
   resolveStoredInvoiceFile,
   verifyInvoice,
 } from '../services/invoiceService.ts';
+import {
+  approveInvoicePayment,
+  listInvestigations,
+  syncAndEvaluateInvoice,
+} from '../services/investigationService.ts';
+import { getLatestMatchResult, matchInvoice } from '../services/matchingService.ts';
+import { getInvoiceRiskSummary } from '../services/riskPipelineService.ts';
 
 export const invoicesRouter = Router();
 
@@ -135,6 +144,20 @@ invoicesRouter.get(
 );
 
 invoicesRouter.get(
+  '/summary',
+  requireRole(...ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const summary = await getInvoiceSummaryMetrics();
+      res.status(200).json(summary);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.get(
   '/:id',
   requireRole(...ROLES),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -210,9 +233,152 @@ invoicesRouter.put(
 
       const result = await verifyInvoice(id, req.user!.id, req.body || {});
       res.status(200).json({
-        message: `Invoice #${id} verified and saved.`,
+        message: `Invoice #${id} verified and 3-way matched (${result.matchResult.status}).`,
         ...result,
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.post(
+  '/:id/match',
+  requireRole('AP_EMPLOYEE', 'FINANCE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const id = Number(req.params.id);
+      if (Number.isNaN(id) || id <= 0) {
+        throw new HttpError(400, 'Invalid invoice ID.');
+      }
+
+      const result = await matchInvoice(id, req.user!.id);
+      res.status(200).json({
+        message: `3-way matching completed for Invoice #${id}: ${result.matchResult.status}.`,
+        ...result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.get(
+  '/:id/match-result',
+  requireRole(...ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const id = Number(req.params.id);
+      if (Number.isNaN(id) || id <= 0) {
+        throw new HttpError(400, 'Invalid invoice ID.');
+      }
+
+      const matchResult = await getLatestMatchResult(id);
+      res.status(200).json({
+        invoiceId: id,
+        hasMatchResult: Boolean(matchResult),
+        matchResult,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.get(
+  '/:id/duplicates',
+  requireRole(...ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const id = Number(req.params.id);
+      if (Number.isNaN(id) || id <= 0) {
+        throw new HttpError(400, 'Invalid invoice ID.');
+      }
+
+      const duplicates = await detectDuplicatesForInvoice(id);
+      res.status(200).json(duplicates);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.get(
+  '/:id/investigations',
+  requireRole(...ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const id = Number(req.params.id);
+      if (Number.isNaN(id) || id <= 0) {
+        throw new HttpError(400, 'Invalid invoice ID.');
+      }
+
+      const [riskSummary, investigations] = await Promise.all([
+        getInvoiceRiskSummary(id),
+        listInvestigations({ invoiceId: id }),
+      ]);
+
+      res.status(200).json({
+        invoiceId: id,
+        riskSummary,
+        investigations,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.post(
+  '/:id/run-pipeline',
+  requireRole('AP_EMPLOYEE', 'FINANCE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const id = Number(req.params.id);
+      if (Number.isNaN(id) || id <= 0) {
+        throw new HttpError(400, 'Invalid invoice ID.');
+      }
+
+      const result = await syncAndEvaluateInvoice(id, req.user!.id);
+      res.status(200).json({
+        message: `Full risk & compliance pipeline executed for Invoice #${id}.`,
+        ...result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+invoicesRouter.post(
+  '/:id/approve-payment',
+  requireRole('AP_EMPLOYEE', 'PROCUREMENT_EMPLOYEE', 'WAREHOUSE_EMPLOYEE', 'FINANCE_MANAGER', 'ADMIN'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabaseBootstrapped();
+      const id = Number(req.params.id);
+      if (Number.isNaN(id) || id <= 0) {
+        throw new HttpError(400, 'Invalid invoice ID.');
+      }
+
+      const rawLevel = req.body?.level !== undefined ? Number(req.body.level) : 2;
+      const level: 1 | 2 = rawLevel === 1 ? 1 : 2;
+      const remarks = typeof req.body?.remarks === 'string' ? req.body.remarks : undefined;
+
+      const result = await approveInvoicePayment({
+        invoiceId: id,
+        approverId: req.user!.id,
+        approverRole: req.user!.role,
+        level,
+        remarks,
+      });
+
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

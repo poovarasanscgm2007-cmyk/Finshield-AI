@@ -317,6 +317,8 @@ async function main(): Promise<void> {
 
       const verifyRes = await apiJson<{
         invoice: { status: string; normalized_invoice_number: string; verified_by: number };
+        verifiedStatus?: string;
+        matchResult?: { status: string; reasons: string[] };
       }>(baseUrl, `/api/invoices/${uploadData.invoice.id}/verify`, {
         method: 'PUT',
         token: tokens.AP_EMPLOYEE,
@@ -334,10 +336,12 @@ async function main(): Promise<void> {
         },
       });
       assert.equal(verifyRes.status, 200);
-      assert.equal(verifyRes.data.invoice.status, 'VERIFIED');
+      assert.equal(verifyRes.data.verifiedStatus, 'VERIFIED');
+      assert.equal(verifyRes.data.matchResult?.status, 'HOLD');
+      assert.equal(verifyRes.data.invoice.status, 'ON_HOLD');
       assert.equal(verifyRes.data.invoice.normalized_invoice_number, 'INV099');
 
-      // Re-verify audit hash chain after invoice upload + verification entries
+      // Re-verify audit hash chain after invoice upload + verification + auto-match entries
       const postAudit = await apiJson<{ valid: boolean; totalEntries: number }>(
         baseUrl,
         '/api/audit-log/verify',
@@ -346,7 +350,278 @@ async function main(): Promise<void> {
       assert.equal(postAudit.status, 200);
       assert.equal(postAudit.data.valid, true);
 
-      return `Scanned #${uploadData.invoice.id} (${uploadData.invoice.status} via ${uploadData.invoice.extraction_method}) verified -> VERIFIED; audit valid (${postAudit.data.totalEntries} rows)`;
+      return `Scanned #${uploadData.invoice.id} (${uploadData.invoice.status} via ${uploadData.invoice.extraction_method}) -> VERIFIED & auto-matched HOLD/ON_HOLD; audit valid (${postAudit.data.totalEntries} rows)`;
+    });
+
+    // 8. Phase 4: 3-Way Matching & Duplicate Detection on seeded INV-101 / INV_101
+    await runStep('3-Way matching (INV-101 MISMATCH/ON_HOLD) & Duplicate detection (INV_101)', async () => {
+      const listRes = await apiJson<{
+        items: Array<{
+          id: number;
+          invoice_number: string | null;
+          file_path: string | null;
+          possible_duplicate?: boolean;
+        }>;
+      }>(baseUrl, '/api/invoices', { token: tokens.AP_EMPLOYEE });
+      assert.equal(listRes.status, 200);
+
+      const inv101Matches = listRes.data.items.filter((inv) => inv.invoice_number === 'INV-101');
+      const seededInv101 =
+        inv101Matches.find((inv) => inv.file_path === 'sample-data/INV-101-sample.pdf') ||
+        inv101Matches[inv101Matches.length - 1];
+      assert.ok(seededInv101, 'Seeded INV-101 must exist in /api/invoices');
+
+      // RBAC check: Warehouse Employee cannot run 3-way match (403)
+      const whMatch = await apiJson(baseUrl, `/api/invoices/${seededInv101.id}/match`, {
+        method: 'POST',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+      });
+      assert.equal(whMatch.status, 403, 'Warehouse Employee must get 403 on POST /match');
+
+      // AP Employee runs 3-way match on INV-101
+      const matchRes = await apiJson<{
+        matchResult: {
+          status: string;
+          reasons: string[];
+          compared_values: {
+            poApprovedUnitPrice: number;
+            poUnapprovedPriceChange: boolean;
+            grnReceivedQty: number;
+            invoiceQty: number;
+            cells: Array<{ field: string; mismatch: boolean }>;
+          };
+        };
+        invoiceStatus: string;
+      }>(baseUrl, `/api/invoices/${seededInv101.id}/match`, {
+        method: 'POST',
+        token: tokens.AP_EMPLOYEE,
+      });
+      assert.equal(matchRes.status, 200);
+      assert.equal(matchRes.data.matchResult.status, 'MISMATCH');
+      assert.equal(matchRes.data.invoiceStatus, 'ON_HOLD');
+      assert.ok(
+        matchRes.data.matchResult.reasons.includes('Invoice qty 100 exceeds received qty 80 by 20'),
+        `Missing expected qty excess reason: ${JSON.stringify(matchRes.data.matchResult.reasons)}`
+      );
+      assert.equal(matchRes.data.matchResult.compared_values.poApprovedUnitPrice, 500);
+      assert.equal(matchRes.data.matchResult.compared_values.poUnapprovedPriceChange, true);
+
+      // Finance Manager can also fetch stored match result & trigger re-match
+      const getMatchRes = await apiJson<{
+        matchResult: { status: string; compared_values: { cells: Array<{ field: string }> } } | null;
+      }>(baseUrl, `/api/invoices/${seededInv101.id}/match-result`, {
+        token: tokens.FINANCE_MANAGER,
+      });
+      assert.equal(getMatchRes.status, 200);
+      assert.equal(getMatchRes.data.matchResult?.status, 'MISMATCH');
+      assert.ok((getMatchRes.data.matchResult?.compared_values.cells.length || 0) >= 5);
+
+      // Duplicate detection on INV-101 flags seeded INV_101
+      const dupRes = await apiJson<{
+        hasPossibleDuplicates: boolean;
+        highestScore: number;
+        threshold: number;
+        possibleDuplicates: Array<{
+          candidateInvoiceNumber: string | null;
+          similarityScore: number;
+          isPossibleDuplicate: boolean;
+        }>;
+      }>(baseUrl, `/api/invoices/${seededInv101.id}/duplicates`, {
+        token: tokens.AP_EMPLOYEE,
+      });
+      assert.equal(dupRes.status, 200);
+      assert.equal(dupRes.data.hasPossibleDuplicates, true);
+      assert.ok(dupRes.data.highestScore >= dupRes.data.threshold);
+      assert.ok(
+        dupRes.data.possibleDuplicates.some((d) => d.candidateInvoiceNumber === 'INV_101'),
+        'Expected INV-101 duplicate check to flag seeded INV_101'
+      );
+
+      // Dashboard summary counts
+      const summaryRes = await apiJson<{
+        totalInvoices: number;
+        matchedCount: number;
+        mismatchedCount: number;
+        possibleDuplicatesCount: number;
+      }>(baseUrl, '/api/invoices/summary', { token: tokens.AP_EMPLOYEE });
+      assert.equal(summaryRes.status, 200);
+      assert.ok(summaryRes.data.totalInvoices >= 10);
+      assert.ok(summaryRes.data.mismatchedCount >= 1);
+      assert.ok(summaryRes.data.possibleDuplicatesCount >= 2);
+
+      // Re-verify PO-101 UNAPPROVED price change stays untouched
+      const poCheck = await apiJson<{ items: Array<{ po_number: string; status: string }> }>(
+        baseUrl,
+        '/api/purchase-orders/unapproved-changes',
+        { token: tokens.FINANCE_MANAGER }
+      );
+      assert.equal(poCheck.status, 200);
+      assert.ok(
+        poCheck.data.items.some((c) => c.po_number === 'PO-101' && c.status === 'UNAPPROVED'),
+        'PO-101 UNAPPROVED change must remain intact'
+      );
+
+      return `INV-101 #${seededInv101.id} => MISMATCH/ON_HOLD; duplicate INV_101 score=${dupRes.data.highestScore}; summary total=${summaryRes.data.totalInvoices}, mismatched=${summaryRes.data.mismatchedCount}, duplicates=${summaryRes.data.possibleDuplicatesCount}`;
+    });
+
+    // 9. Phase 5: Investigations, RBAC, Revalidation, Payment Gate, Dashboard & AI Copilot
+    await runStep('Phase 5: Investigations auto-routing, RBAC 403, GRN revalidation, Payment Gate & Copilot', async () => {
+      // Reset demo first to start Step 9 from crisp seeded state with INV-101 open issues
+      const resetStart = await apiJson<{ status: string }>(baseUrl, '/api/system/reset-demo', {
+        method: 'POST',
+        token: tokens.ADMIN,
+      });
+      assert.equal(resetStart.status, 200, 'Admin POST /api/system/reset-demo must return 200');
+
+      const invListRes = await apiJson<{
+        items: Array<{ id: number; invoice_number: string | null; status: string }>;
+      }>(baseUrl, '/api/invoices', { token: tokens.FINANCE_MANAGER });
+      assert.equal(invListRes.status, 200);
+      const inv101 = invListRes.data.items.find((i) => i.invoice_number === 'INV-101');
+      assert.ok(inv101, 'INV-101 must exist after reset-demo');
+
+      // Run full pipeline twice -> verify idempotency (no duplicate investigations)
+      const pipe1 = await apiJson(baseUrl, `/api/invoices/${inv101.id}/run-pipeline`, {
+        method: 'POST',
+        token: tokens.FINANCE_MANAGER,
+      });
+      assert.equal(pipe1.status, 200);
+      const pipe2 = await apiJson(baseUrl, `/api/invoices/${inv101.id}/run-pipeline`, {
+        method: 'POST',
+        token: tokens.FINANCE_MANAGER,
+      });
+      assert.equal(pipe2.status, 200);
+
+      const invCasesRes = await apiJson<{
+        riskSummary: { riskScore: number; riskLevel: string; itcAtRisk: number };
+        investigations: Array<{
+          id: number;
+          issue_type: string;
+          department: string;
+          status: string;
+        }>;
+      }>(baseUrl, `/api/invoices/${inv101.id}/investigations`, {
+        token: tokens.FINANCE_MANAGER,
+      });
+      assert.equal(invCasesRes.status, 200);
+      const issueTypes = invCasesRes.data.investigations.map((c) => c.issue_type);
+      assert.equal(new Set(issueTypes).size, issueTypes.length, 'No duplicate investigation records');
+      assert.ok(issueTypes.includes('QUANTITY_MISMATCH'));
+      assert.ok(issueTypes.includes('UNAPPROVED_PO_CHANGE'));
+      assert.ok(issueTypes.includes('GST_ITC_RISK'));
+      assert.ok(invCasesRes.data.riskSummary.itcAtRisk >= 9000);
+
+      // Warehouse 403 on Finance investigation
+      const gstCase = invCasesRes.data.investigations.find((c) => c.issue_type === 'GST_ITC_RISK')!;
+      const whForbidden = await apiJson(baseUrl, `/api/investigations/${gstCase.id}/status`, {
+        method: 'PUT',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+        body: { status: 'IN_PROGRESS', comment: 'Should be forbidden for Warehouse' },
+      });
+      assert.equal(whForbidden.status, 403, 'Warehouse must receive 403 on Finance investigation');
+
+      // Payment blocked (409) while investigations are not REVALIDATED
+      const blockedPay = await apiJson(baseUrl, `/api/invoices/${inv101.id}/approve-payment`, {
+        method: 'POST',
+        token: tokens.FINANCE_MANAGER,
+        body: { level: 2 },
+      });
+      assert.equal(blockedPay.status, 409, 'Payment must be blocked (409) when investigations remain open');
+
+      // Copilot factual check
+      const copilotRes = await apiJson<{
+        answer: string;
+        source: string;
+        evidence: Array<{ recordType: string; recordId: string; link: string }>;
+        recommendedActions: Array<{ department: string; action: string }>;
+      }>(baseUrl, '/api/copilot/ask', {
+        method: 'POST',
+        token: tokens.FINANCE_MANAGER,
+        body: { question: "Why is Supplier A's invoice flagged?", invoiceId: inv101.id },
+      });
+      assert.equal(copilotRes.status, 200);
+      assert.ok(copilotRes.data.evidence.length > 0, 'Copilot must cite DB evidence');
+      assert.ok(copilotRes.data.answer.includes('20'), 'Copilot answer must mention 20 kg qty gap');
+      assert.ok(copilotRes.data.answer.includes('500'), 'Copilot answer must mention Rs 500');
+      assert.ok(copilotRes.data.answer.includes('700'), 'Copilot answer must mention Rs 700');
+      assert.ok(/9,?000/.test(copilotRes.data.answer), 'Copilot answer must mention Rs 9,000 ITC at risk');
+
+      // Copilot RBAC check for Warehouse
+      const whCopilot = await apiJson<{ rbacFiltered: boolean }>(baseUrl, '/api/copilot/ask', {
+        method: 'POST',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+        body: { question: 'How much ITC is at risk?' },
+      });
+      assert.equal(whCopilot.status, 200);
+      assert.equal(whCopilot.data.rbacFiltered, true);
+
+      // Quantity investigation: resolve BEFORE GRN fix => REOPENED, then fix GRN (+20kg) & resolve => REVALIDATED
+      const qtyCase = invCasesRes.data.investigations.find(
+        (c) => c.issue_type === 'QUANTITY_MISMATCH'
+      )!;
+
+      const inProg = await apiJson(baseUrl, `/api/investigations/${qtyCase.id}/status`, {
+        method: 'PUT',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+        body: { status: 'IN_PROGRESS', comment: 'Checking warehouse bay for missing 20 kg.' },
+      });
+      assert.equal(inProg.status, 200);
+
+      const prematureResolve = await apiJson<{
+        revalidation: { outcome: string; reason: string };
+      }>(baseUrl, `/api/investigations/${qtyCase.id}/status`, {
+        method: 'PUT',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+        body: { status: 'RESOLVED', comment: 'Attempting resolve before GRN update.' },
+      });
+      assert.equal(prematureResolve.status, 200);
+      assert.equal(prematureResolve.data.revalidation.outcome, 'REOPENED');
+
+      const grnFix = await apiJson(baseUrl, '/api/grns', {
+        method: 'POST',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+        body: { poNumber: 'PO-101', quantityReceived: 20, unit: 'kg', warehouseLocation: 'WH-MUM-01' },
+      });
+      assert.equal(grnFix.status, 201);
+
+      const finalResolve = await apiJson<{
+        revalidation: { outcome: string };
+        invoiceStatus: string;
+      }>(baseUrl, `/api/investigations/${qtyCase.id}/status`, {
+        method: 'PUT',
+        token: tokens.WAREHOUSE_EMPLOYEE,
+        body: { status: 'RESOLVED', comment: 'Recorded partial GRN for remaining 20 kg wood.' },
+      });
+      assert.equal(finalResolve.status, 200);
+      assert.equal(finalResolve.data.revalidation.outcome, 'REVALIDATED');
+      assert.equal(finalResolve.data.invoiceStatus, 'ON_HOLD');
+
+      // Dashboard metrics check
+      const dashRes = await apiJson<{
+        cards: { highRiskCount: number; pendingInvestigationsCount: number; itcAtRiskInr: number };
+        charts: {
+          invoicesByStatus: unknown[];
+          riskLevelDistribution: unknown[];
+          investigationsByDepartment: unknown[];
+        };
+        recentAlerts: unknown[];
+      }>(baseUrl, '/api/dashboard/metrics', { token: tokens.FINANCE_MANAGER });
+      assert.equal(dashRes.status, 200);
+      assert.ok(dashRes.data.cards.highRiskCount >= 1);
+      assert.ok(dashRes.data.cards.pendingInvestigationsCount >= 1);
+      assert.ok(dashRes.data.cards.itcAtRiskInr >= 9000);
+      assert.ok(dashRes.data.charts.invoicesByStatus.length > 0);
+      assert.ok(dashRes.data.charts.riskLevelDistribution.length > 0);
+      assert.ok(dashRes.data.charts.investigationsByDepartment.length > 0);
+
+      // Restore clean seeded demo state at end of smoke test
+      const resetEnd = await apiJson<{ status: string }>(baseUrl, '/api/system/reset-demo', {
+        method: 'POST',
+        token: tokens.ADMIN,
+      });
+      assert.equal(resetEnd.status, 200);
+
+      return `INV-101 investigations=${invCasesRes.data.investigations.length}, qty revalidated after GRN fix (others still ON_HOLD), Copilot=${copilotRes.data.source}, demo reset restored`;
     });
 
     console.log(`\nALL ${results.length} SMOKE CHECKS PASSED.`);

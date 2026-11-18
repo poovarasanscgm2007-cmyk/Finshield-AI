@@ -5,9 +5,15 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.ts';
 import { approvalsRouter } from './routes/approvals.ts';
 import { auditLogRouter } from './routes/auditLog.ts';
 import { authRouter } from './routes/auth.ts';
+import { copilotRouter } from './routes/copilot.ts';
+import { dashboardRouter } from './routes/dashboard.ts';
+import { grnsRouter } from './routes/grns.ts';
 import { healthRouter } from './routes/health.ts';
+import { investigationsRouter } from './routes/investigations.ts';
 import { invoicesRouter } from './routes/invoices.ts';
 import { purchaseOrdersRouter } from './routes/purchaseOrders.ts';
+import { suppliersRouter } from './routes/suppliers.ts';
+import { systemRouter } from './routes/system.ts';
 
 export function createApiApp(): Express {
   const app = express();
@@ -25,11 +31,17 @@ export function createApiApp(): Express {
   app.use('/api/health', healthRouter);
   app.use('/api/auth', authRouter);
 
-  // Protected Phase 2 & 3 routes
+  // Protected workflow routes
   app.use('/api/approvals', approvalsRouter);
   app.use('/api/purchase-orders', purchaseOrdersRouter);
   app.use('/api/audit-log', auditLogRouter);
   app.use('/api/invoices', invoicesRouter);
+  app.use('/api/investigations', investigationsRouter);
+  app.use('/api/copilot', copilotRouter);
+  app.use('/api/grns', grnsRouter);
+  app.use('/api/dashboard', dashboardRouter);
+  app.use('/api/suppliers', suppliersRouter);
+  app.use('/api/system', systemRouter);
 
   return app;
 }

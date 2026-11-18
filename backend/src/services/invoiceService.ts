@@ -5,7 +5,10 @@ import { getPool, query } from '../db/pool.ts';
 import { HttpError } from '../middleware/errorHandler.ts';
 import { isValidIsoDate, normalizeInvoiceNumber } from '../utils/invoiceNormalizer.ts';
 import { writeAuditLog } from './auditService.ts';
+import { getDuplicateFlagsByInvoice } from './duplicateService.ts';
 import { extractStructuredInvoice, StructuredInvoiceExtraction } from './llmInvoiceExtractor.ts';
+import { syncAndEvaluateInvoice } from './investigationService.ts';
+import { StoredMatchResultRecord } from './matchingService.ts';
 import { extractTextFromDocument } from './ocrTextExtractor.ts';
 
 export interface InvoiceRecord {
@@ -45,6 +48,20 @@ export interface InvoiceRecord {
   is_historical: boolean;
   is_sample_data: boolean;
   created_at: string;
+  match_status?: string | null;
+  match_reasons?: string[] | null;
+  possible_duplicate?: boolean;
+  duplicate_score?: number;
+  duplicate_reasons?: string[];
+  risk_score?: string;
+  risk_level?: string;
+  itc_at_risk?: string;
+  level1_approved_by?: number | null;
+  level1_approved_by_name?: string | null;
+  level1_approved_at?: string | null;
+  payment_approved_by?: number | null;
+  payment_approved_by_name?: string | null;
+  payment_approved_at?: string | null;
 }
 
 export interface InvoiceLineRecord {
@@ -255,21 +272,94 @@ export async function createAndExtractInvoice(params: {
 }
 
 export async function listInvoices(): Promise<InvoiceRecord[]> {
-  const res = await query<InvoiceRecord>(
-    `
-    SELECT
-      i.*,
-      COALESCE(i.supplier_name_extracted, s.name) AS supplier_name,
-      po.po_number,
-      v.name AS verified_by_name
-    FROM invoices i
-    LEFT JOIN suppliers s ON s.id = i.supplier_id
-    LEFT JOIN purchase_orders po ON po.id = i.po_id
-    LEFT JOIN users v ON v.id = i.verified_by
-    ORDER BY i.is_historical ASC, i.id DESC;
-    `
-  );
-  return res.rows;
+  const [res, duplicateFlags] = await Promise.all([
+    query<InvoiceRecord>(
+      `
+      SELECT
+        i.*,
+        COALESCE(i.supplier_name_extracted, s.name) AS supplier_name,
+        po.po_number,
+        v.name AS verified_by_name,
+        mr.status AS match_status,
+        mr.reasons AS match_reasons
+      FROM invoices i
+      LEFT JOIN suppliers s ON s.id = i.supplier_id
+      LEFT JOIN purchase_orders po ON po.id = i.po_id
+      LEFT JOIN users v ON v.id = i.verified_by
+      LEFT JOIN LATERAL (
+        SELECT m.status, m.reasons
+        FROM match_results m
+        WHERE m.invoice_id = i.id
+        ORDER BY m.evaluated_at DESC, m.id DESC
+        LIMIT 1
+      ) mr ON TRUE
+      ORDER BY i.is_historical ASC, i.id DESC;
+      `
+    ),
+    getDuplicateFlagsByInvoice(),
+  ]);
+
+  return res.rows.map((row) => {
+    const dup = duplicateFlags.get(row.id);
+    return {
+      ...row,
+      possible_duplicate: dup?.isPossibleDuplicate ?? false,
+      duplicate_score: dup?.highestScore ?? 0,
+      duplicate_reasons: dup?.reasons ?? [],
+    };
+  });
+}
+
+export async function getInvoiceSummaryMetrics(): Promise<{
+  totalInvoices: number;
+  matchedCount: number;
+  mismatchedCount: number;
+  holdCount: number;
+  onHoldCount: number;
+  possibleDuplicatesCount: number;
+}> {
+  const [countsRes, duplicateFlags] = await Promise.all([
+    query<{
+      total_invoices: string;
+      matched_count: string;
+      mismatched_count: string;
+      hold_count: string;
+      on_hold_count: string;
+    }>(
+      `
+      SELECT
+        COUNT(*)::text AS total_invoices,
+        COUNT(*) FILTER (WHERE COALESCE(mr.status, i.status) = 'MATCHED')::text AS matched_count,
+        COUNT(*) FILTER (WHERE mr.status = 'MISMATCH')::text AS mismatched_count,
+        COUNT(*) FILTER (WHERE mr.status = 'HOLD')::text AS hold_count,
+        COUNT(*) FILTER (WHERE i.status = 'ON_HOLD')::text AS on_hold_count
+      FROM invoices i
+      LEFT JOIN LATERAL (
+        SELECT m.status
+        FROM match_results m
+        WHERE m.invoice_id = i.id
+        ORDER BY m.evaluated_at DESC, m.id DESC
+        LIMIT 1
+      ) mr ON TRUE;
+      `
+    ),
+    getDuplicateFlagsByInvoice(),
+  ]);
+
+  const row = countsRes.rows[0];
+  let possibleDuplicatesCount = 0;
+  for (const val of duplicateFlags.values()) {
+    if (val.isPossibleDuplicate) possibleDuplicatesCount++;
+  }
+
+  return {
+    totalInvoices: Number(row?.total_invoices || 0),
+    matchedCount: Number(row?.matched_count || 0),
+    mismatchedCount: Number(row?.mismatched_count || 0),
+    holdCount: Number(row?.hold_count || 0),
+    onHoldCount: Number(row?.on_hold_count || 0),
+    possibleDuplicatesCount,
+  };
 }
 
 export async function getInvoiceById(id: number): Promise<{
@@ -282,11 +372,15 @@ export async function getInvoiceById(id: number): Promise<{
       i.*,
       COALESCE(i.supplier_name_extracted, s.name) AS supplier_name,
       po.po_number,
-      v.name AS verified_by_name
+      v.name AS verified_by_name,
+      l1.name AS level1_approved_by_name,
+      pa.name AS payment_approved_by_name
     FROM invoices i
     LEFT JOIN suppliers s ON s.id = i.supplier_id
     LEFT JOIN purchase_orders po ON po.id = i.po_id
     LEFT JOIN users v ON v.id = i.verified_by
+    LEFT JOIN users l1 ON l1.id = i.level1_approved_by
+    LEFT JOIN users pa ON pa.id = i.payment_approved_by
     WHERE i.id = $1
     LIMIT 1;
     `,
@@ -347,7 +441,13 @@ export async function verifyInvoice(
   invoiceId: number,
   actorId: number,
   payload: VerifyInvoicePayload
-): Promise<{ invoice: InvoiceRecord; lines: InvoiceLineRecord[]; diff: Record<string, { before: unknown; after: unknown }> }> {
+): Promise<{
+  invoice: InvoiceRecord;
+  lines: InvoiceLineRecord[];
+  diff: Record<string, { before: unknown; after: unknown }>;
+  verifiedStatus: 'VERIFIED';
+  matchResult: StoredMatchResultRecord;
+}> {
   const pool = getPool();
   const client = await pool.connect();
 
@@ -563,13 +663,20 @@ export async function verifyInvoice(
     );
 
     await client.query('COMMIT');
+
+    // Auto-run full matching, duplicate, GST, PO change, overbilling, risk & investigation pipeline
+    const evaluated = await syncAndEvaluateInvoice(invoiceId, actorId);
+    const refreshed = await getInvoiceById(invoiceId);
+
     return {
-      invoice: updatedRes.rows[0],
-      lines: updatedLines,
+      invoice: refreshed.invoice,
+      lines: refreshed.lines,
       diff,
+      verifiedStatus: 'VERIFIED',
+      matchResult: evaluated.pipeline.matchResult,
     };
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
     client.release();

@@ -5,13 +5,23 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
   Download,
+  ExternalLink,
   FileText,
+  FolderSearch,
+  GitCompare,
+  PauseCircle,
+  Play,
   Plus,
+  ShieldCheck,
   Sparkles,
   Trash2,
 } from 'lucide-react';
+import { CopilotPanel } from '../components/CopilotPanel.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
+import { InvestigationStatusTag } from './InvestigationsPage.tsx';
+import { MatchAndStatusBadges } from './InvoicesPage.tsx';
 
 interface FieldConfidenceDetail {
   value: unknown;
@@ -60,6 +70,15 @@ interface InvoiceDetail {
   original_filename: string | null;
   is_historical: boolean;
   is_sample_data: boolean;
+  risk_score?: string;
+  risk_level?: string;
+  itc_at_risk?: string;
+  level1_approved_by?: number | null;
+  level1_approved_by_name?: string | null;
+  level1_approved_at?: string | null;
+  payment_approved_by?: number | null;
+  payment_approved_by_name?: string | null;
+  payment_approved_at?: string | null;
 }
 
 interface InvoiceLineRow {
@@ -85,15 +104,98 @@ interface InvoiceDetailResponse {
   fileUrl: string | null;
 }
 
+interface ThreeWayComparisonCell {
+  field: 'product' | 'quantity' | 'unit_price' | 'tax' | 'total';
+  label: string;
+  poValue: string;
+  grnValue: string;
+  invoiceValue: string;
+  mismatch: boolean;
+  reason: string | null;
+}
+
+interface MatchResultPayload {
+  id: number;
+  invoice_id: number;
+  status: 'MATCHED' | 'MISMATCH' | 'HOLD';
+  reasons: string[];
+  qty_tolerance_percent: string;
+  price_tolerance_percent: string;
+  evaluated_at: string;
+  compared_values: {
+    poNumber: string | null;
+    poStatus: string | null;
+    grnCount: number;
+    grns: Array<{
+      grnNumber: string;
+      receivedAt: string;
+      quantityReceived: number;
+      unit: string;
+    }>;
+    mismatchedFields: string[];
+    cells: ThreeWayComparisonCell[];
+  };
+}
+
+interface DuplicateDetectionResponse {
+  invoiceId: number;
+  invoiceNumber: string | null;
+  normalizedInvoiceNumber: string | null;
+  threshold: number;
+  hasPossibleDuplicates: boolean;
+  highestScore: number;
+  possibleDuplicates: Array<{
+    candidateInvoiceId: number;
+    candidateInvoiceNumber: string | null;
+    candidateNormalizedNumber: string | null;
+    candidateSupplierName: string | null;
+    candidateInvoiceDate: string | null;
+    candidateTotal: number | null;
+    candidateStatus: string;
+    isHistorical: boolean;
+    similarityScore: number;
+    isPossibleDuplicate: boolean;
+    reasons: string[];
+  }>;
+}
+
+interface InvoiceRiskFlag {
+  id: number;
+  rule_code: string;
+  severity: string;
+  reason: string;
+  score: string;
+  created_at: string;
+}
+
+interface InvoiceInvestigationSummary {
+  id: number;
+  issue_type: string;
+  department: string;
+  status: string;
+  severity: string;
+  title: string | null;
+  description: string | null;
+  assigned_to_name: string | null;
+  revalidation_summary?: { outcome?: string; reason?: string };
+}
+
+interface InvoiceInvestigationsResponse {
+  invoiceId: number;
+  riskSummary: {
+    riskScore: number;
+    riskLevel: string;
+    itcAtRisk: number;
+    flags: InvoiceRiskFlag[];
+  };
+  investigations: InvoiceInvestigationSummary[];
+}
+
 function normalizePreview(raw: string): string {
   return raw.trim().toUpperCase().replace(/[\s\-_]+/g, '') || '—';
 }
 
-function ConfidenceHint({
-  detail,
-}: {
-  detail?: FieldConfidenceDetail;
-}) {
+function ConfidenceHint({ detail }: { detail?: FieldConfidenceDetail }) {
   if (!detail) {
     return <span className="font-mono text-xs text-slate-400">No score</span>;
   }
@@ -140,6 +242,18 @@ export function InvoiceVerifyPage() {
   const [hasFile, setHasFile] = useState<boolean>(false);
   const [fileBlobUrl, setFileBlobUrl] = useState<string | null>(null);
 
+  const [matchResult, setMatchResult] = useState<MatchResultPayload | null>(null);
+  const [runningMatch, setRunningMatch] = useState<boolean>(false);
+  const [matchMessage, setMatchMessage] = useState<string | null>(null);
+
+  const [duplicates, setDuplicates] = useState<DuplicateDetectionResponse | null>(null);
+  const [issuesData, setIssuesData] = useState<InvoiceInvestigationsResponse | null>(null);
+  const [activeTab, setActiveTab] = useState<'comparison' | 'issues'>('comparison');
+  const [runningPipeline, setRunningPipeline] = useState<boolean>(false);
+  const [approvalRemarks, setApprovalRemarks] = useState<string>('');
+  const [approvingPayment, setApprovingPayment] = useState<boolean>(false);
+  const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
+
   // Editable form fields
   const [supplierName, setSupplierName] = useState<string>('');
   const [supplierGstin, setSupplierGstin] = useState<string>('');
@@ -160,6 +274,8 @@ export function InvoiceVerifyPage() {
   const [saveDiffCount, setSaveDiffCount] = useState<number | null>(null);
 
   const canVerify = user?.role === 'AP_EMPLOYEE';
+  const canRunMatch = user?.role === 'AP_EMPLOYEE' || user?.role === 'FINANCE_MANAGER';
+  const isFinanceManager = user?.role === 'FINANCE_MANAGER';
 
   const hydrateForm = useCallback((res: InvoiceDetailResponse) => {
     const inv = res.invoice;
@@ -195,8 +311,18 @@ export function InvoiceVerifyPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch<InvoiceDetailResponse>(`/api/invoices/${id}`);
-      hydrateForm(data);
+      const [detailRes, matchRes, dupRes, invRes] = await Promise.all([
+        apiFetch<InvoiceDetailResponse>(`/api/invoices/${id}`),
+        apiFetch<{ hasMatchResult: boolean; matchResult: MatchResultPayload | null }>(
+          `/api/invoices/${id}/match-result`
+        ),
+        apiFetch<DuplicateDetectionResponse>(`/api/invoices/${id}/duplicates`),
+        apiFetch<InvoiceInvestigationsResponse>(`/api/invoices/${id}/investigations`),
+      ]);
+      hydrateForm(detailRes);
+      setMatchResult(matchRes.matchResult);
+      setDuplicates(dupRes);
+      setIssuesData(invRes);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load invoice.');
     } finally {
@@ -231,7 +357,7 @@ export function InvoiceVerifyPage() {
           URL.revokeObjectURL(createdUrl);
         }
       } catch {
-        // Ignore preview fetch errors; text fallback handles missing preview
+        // Ignore preview errors
       }
     }
 
@@ -249,6 +375,68 @@ export function InvoiceVerifyPage() {
     () => invoice?.extraction_confidence?.fields || {},
     [invoice]
   );
+
+  async function handleRunMatch() {
+    if (!id || !canRunMatch) return;
+    setRunningMatch(true);
+    setError(null);
+    setMatchMessage(null);
+    try {
+      const res = await apiFetch<{
+        message: string;
+        matchResult: MatchResultPayload;
+        invoiceStatus: string;
+      }>(`/api/invoices/${id}/match`, { method: 'POST' });
+      setMatchResult(res.matchResult);
+      setMatchMessage(res.message);
+      await loadDetail();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to run 3-way matching.');
+    } finally {
+      setRunningMatch(false);
+    }
+  }
+
+  async function handleRunPipeline() {
+    if (!id || !canRunMatch) return;
+    setRunningPipeline(true);
+    setError(null);
+    setMatchMessage(null);
+    try {
+      const res = await apiFetch<{ message: string }>(`/api/invoices/${id}/run-pipeline`, {
+        method: 'POST',
+      });
+      setMatchMessage(res.message);
+      await loadDetail();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to execute full risk pipeline.');
+    } finally {
+      setRunningPipeline(false);
+    }
+  }
+
+  async function handleApprovePayment(level: 1 | 2) {
+    if (!id) return;
+    setApprovingPayment(true);
+    setError(null);
+    setPaymentMessage(null);
+    try {
+      const res = await apiFetch<{ message: string }>(`/api/invoices/${id}/approve-payment`, {
+        method: 'POST',
+        body: JSON.stringify({
+          level,
+          remarks: approvalRemarks.trim() || undefined,
+        }),
+      });
+      setPaymentMessage(res.message);
+      setApprovalRemarks('');
+      await loadDetail();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Payment approval blocked.');
+    } finally {
+      setApprovingPayment(false);
+    }
+  }
 
   async function handleConfirmVerify(e: FormEvent) {
     e.preventDefault();
@@ -271,6 +459,7 @@ export function InvoiceVerifyPage() {
         invoice: InvoiceDetail;
         lines: InvoiceDetailResponse['lines'];
         diff: Record<string, { before: unknown; after: unknown }>;
+        matchResult: MatchResultPayload;
       }>(`/api/invoices/${id}/verify`, {
         method: 'PUT',
         body: JSON.stringify({
@@ -331,7 +520,7 @@ export function InvoiceVerifyPage() {
   if (loading) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-8 text-sm text-slate-600">
-        Loading invoice verification view...
+        Loading invoice detail, 3-way matching &amp; duplicate analysis...
       </div>
     );
   }
@@ -359,13 +548,16 @@ export function InvoiceVerifyPage() {
       ? Math.round(invoice.extraction_confidence.ocrConfidence * 100)
       : null;
 
-  const isPdf = invoice.mime_type === 'application/pdf' ||
+  const isPdf =
+    invoice.mime_type === 'application/pdf' ||
     (invoice.original_filename || '').toLowerCase().endsWith('.pdf');
+
+  const cells = matchResult?.compared_values?.cells || [];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4">
           <Link
             to="/invoices"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
@@ -381,33 +573,41 @@ export function InvoiceVerifyPage() {
               </span>
             </h2>
             <p className="text-xs text-slate-500">
-              Status:{' '}
-              <span
-                className={`font-semibold ${
-                  invoice.status === 'VERIFIED'
-                    ? 'text-emerald-700'
-                    : invoice.status === 'NEEDS_VERIFICATION'
-                    ? 'text-amber-700'
-                    : 'text-sky-700'
-                }`}
-              >
-                {invoice.status}
-              </span>
+              Invoice Status: <span className="font-mono font-semibold text-slate-800">{invoice.status}</span>
               {invoice.verified_by_name && ` · Verified by ${invoice.verified_by_name}`}
             </p>
           </div>
+          <MatchAndStatusBadges
+            invoiceStatus={invoice.status}
+            matchStatus={matchResult?.status}
+            possibleDuplicate={duplicates?.hasPossibleDuplicates}
+            duplicateScore={duplicates?.highestScore}
+          />
         </div>
 
-        {fileBlobUrl && (
-          <a
-            href={fileBlobUrl}
-            download={invoice.original_filename || `invoice-${invoice.id}`}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
-          >
-            <Download className="h-3.5 w-3.5" aria-hidden="true" />
-            Download Original
-          </a>
-        )}
+        <div className="flex items-center gap-3">
+          {canRunMatch && (
+            <button
+              type="button"
+              onClick={() => void handleRunMatch()}
+              disabled={runningMatch}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60 whitespace-nowrap"
+            >
+              <Play className="h-3.5 w-3.5" aria-hidden="true" />
+              {runningMatch ? 'Matching...' : 'Run 3-Way Match'}
+            </button>
+          )}
+          {fileBlobUrl && (
+            <a
+              href={fileBlobUrl}
+              download={invoice.original_filename || `invoice-${invoice.id}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              Download Original
+            </a>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -417,6 +617,26 @@ export function InvoiceVerifyPage() {
         >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" aria-hidden="true" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {matchMessage && (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900"
+        >
+          <GitCompare className="mt-0.5 h-4 w-4 shrink-0 text-slate-700" aria-hidden="true" />
+          <span>{matchMessage}</span>
+        </div>
+      )}
+
+      {paymentMessage && (
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
+        >
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+          <span>{paymentMessage}</span>
         </div>
       )}
 
@@ -435,8 +655,504 @@ export function InvoiceVerifyPage() {
         </div>
       )}
 
+      {/* Payment Gate & Multi-Level Human Approval Banner */}
+      {(() => {
+        const riskLevel = issuesData?.riskSummary.riskLevel || invoice.risk_level || 'LOW';
+        const riskScore = issuesData?.riskSummary.riskScore ?? Number(invoice.risk_score || 0);
+        const itcRisk = issuesData?.riskSummary.itcAtRisk ?? Number(invoice.itc_at_risk || 0);
+        const invList = issuesData?.investigations || [];
+        const pendingInvs = invList.filter((i) => i.status !== 'REVALIDATED');
+        const isHighRisk = riskLevel === 'HIGH' || riskLevel === 'CRITICAL';
+        const isFinalApproved = invoice.status === 'APPROVED' || invoice.status === 'PAID';
+        const isEligible = invoice.status === 'ELIGIBLE_FOR_APPROVAL';
+
+        return (
+          <section
+            aria-label="Payment Gate and Investigation Priority"
+            className="rounded-lg border border-slate-200 bg-white p-5 space-y-4"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-xs font-bold text-slate-900">
+                    <ShieldCheck className="h-4 w-4 text-slate-700" aria-hidden="true" />
+                    Payment Gate Status: {invoice.status}
+                  </span>
+                  <span
+                    className={`font-mono text-xs font-semibold ${
+                      isHighRisk ? 'text-rose-700' : 'text-slate-700'
+                    }`}
+                  >
+                    Investigation Priority: {riskLevel} ({riskScore}/100)
+                  </span>
+                  <span className="font-mono text-xs font-semibold text-slate-800 tabular-nums">
+                    ITC at Risk: Rs {itcRisk.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Risk scores reflect investigation priority only (not proof of fraud). Payment approval is strictly a human decision after every investigation is REVALIDATED.
+                </p>
+              </div>
+
+              {canRunMatch && (
+                <button
+                  type="button"
+                  onClick={() => void handleRunPipeline()}
+                  disabled={runningPipeline}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-60 whitespace-nowrap"
+                >
+                  <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                  {runningPipeline ? 'Running Pipeline...' : 'Run Full Pipeline'}
+                </button>
+              )}
+            </div>
+
+            {isFinalApproved ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-900">
+                <span className="font-semibold">
+                  Human Payment Approved{invoice.payment_approved_by_name ? ` by ${invoice.payment_approved_by_name}` : ''}
+                </span>
+                {invoice.level1_approved_by_name && (
+                  <span className="ml-2">
+                    · Level 1 sign-off by {invoice.level1_approved_by_name}
+                  </span>
+                )}
+              </div>
+            ) : pendingInvs.length > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-900">
+                <span>
+                  Payment blocked: {pendingInvs.length} investigation(s) must reach REVALIDATED before this invoice becomes ELIGIBLE_FOR_APPROVAL.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('issues')}
+                  className="font-semibold underline hover:text-rose-950"
+                >
+                  Inspect {pendingInvs.length} Issue(s)
+                </button>
+              </div>
+            ) : isEligible ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-4 space-y-3">
+                <div className="text-xs text-emerald-950">
+                  <p className="font-semibold">
+                    Invoice is ELIGIBLE_FOR_APPROVAL (all investigations revalidated &amp; 3-way match passed).
+                  </p>
+                  {isHighRisk && (
+                    <p className="mt-1">
+                      Multi-level approval active ({riskLevel} priority): requires 2 different human approvers (Level 1 reviewer + Finance Manager final approval).
+                      {invoice.level1_approved_by_name && (
+                        <strong className="ml-1">
+                          Level 1 completed by {invoice.level1_approved_by_name}.
+                        </strong>
+                      )}
+                    </p>
+                  )}
+                </div>
+
+                {user?.role !== 'ADMIN' && (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <input
+                      type="text"
+                      value={approvalRemarks}
+                      onChange={(e) => setApprovalRemarks(e.target.value)}
+                      placeholder="Approval remarks (optional)..."
+                      className="min-w-[220px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900"
+                    />
+                    {isHighRisk && !invoice.level1_approved_by && (
+                      <button
+                        type="button"
+                        disabled={approvingPayment}
+                        onClick={() => void handleApprovePayment(1)}
+                        className="rounded-lg border border-slate-900 bg-white px-3.5 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-100 disabled:opacity-60 whitespace-nowrap"
+                      >
+                        {approvingPayment ? 'Submitting...' : 'Level 1 Risk Sign-Off'}
+                      </button>
+                    )}
+                    {isFinanceManager && (!isHighRisk || Boolean(invoice.level1_approved_by)) && (
+                      <button
+                        type="button"
+                        disabled={approvingPayment}
+                        onClick={() => void handleApprovePayment(2)}
+                        className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60 whitespace-nowrap"
+                      >
+                        {approvingPayment ? 'Approving...' : 'Approve Final Payment (Finance Manager)'}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </section>
+        );
+      })()}
+
+      {/* Section Tabs: Comparison & Verification vs Issues */}
+      <div className="flex items-center gap-2 border-b border-slate-200">
+        <button
+          type="button"
+          onClick={() => setActiveTab('comparison')}
+          className={`border-b-2 px-4 py-2.5 text-sm font-semibold transition-colors ${
+            activeTab === 'comparison'
+              ? 'border-slate-900 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          3-Way Match &amp; Document Verification
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('issues')}
+          className={`inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-semibold transition-colors ${
+            activeTab === 'issues'
+              ? 'border-slate-900 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <FolderSearch className="h-4 w-4" aria-hidden="true" />
+          Issues &amp; Risk Flags ({issuesData?.investigations.length || 0})
+        </button>
+      </div>
+
+      {activeTab === 'issues' ? (
+        <div className="space-y-6">
+          <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">
+                  Linked Investigations ({issuesData?.investigations.length || 0})
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Auto-routed by department rule. Resolve and revalidate each issue in Investigation Center.
+                </p>
+              </div>
+              <Link
+                to="/investigations"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Open Investigation Center
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+            </div>
+
+            {!issuesData || issuesData.investigations.length === 0 ? (
+              <p className="py-4 text-sm text-slate-600">
+                No investigations have been created for this invoice.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-500">
+                      <th className="py-2 pr-3">ID</th>
+                      <th className="py-2 pr-3">Issue Type</th>
+                      <th className="py-2 pr-3">Department</th>
+                      <th className="py-2 pr-3">Assignee</th>
+                      <th className="py-2 pr-3">Status</th>
+                      <th className="py-2 pr-3">Summary</th>
+                      <th className="py-2 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {issuesData.investigations.map((invItem) => (
+                      <tr key={invItem.id} className="hover:bg-slate-50">
+                        <td className="py-3 pr-3 font-mono font-semibold text-slate-900">
+                          #{invItem.id}
+                        </td>
+                        <td className="py-3 pr-3 font-mono font-semibold text-slate-800">
+                          {invItem.issue_type}
+                        </td>
+                        <td className="py-3 pr-3 text-slate-700">{invItem.department}</td>
+                        <td className="py-3 pr-3 text-slate-700">
+                          {invItem.assigned_to_name || 'Unassigned'}
+                        </td>
+                        <td className="py-3 pr-3">
+                          <InvestigationStatusTag status={invItem.status} />
+                        </td>
+                        <td className="py-3 pr-3 text-slate-700">{invItem.description}</td>
+                        <td className="py-3 text-right">
+                          <Link
+                            to={`/investigations?id=${invItem.id}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                          >
+                            Investigate
+                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">
+                Explainable Risk Flags ({issuesData?.riskSummary.flags.length || 0})
+              </h3>
+              <p className="text-xs text-slate-500">
+                Deterministic rule-weighted signals contributing to investigation priority ({issuesData?.riskSummary.riskScore ?? 0}/100).
+              </p>
+            </div>
+            {!issuesData || issuesData.riskSummary.flags.length === 0 ? (
+              <p className="text-sm text-slate-600">No active unresolved risk flags.</p>
+            ) : (
+              <ul className="space-y-2">
+                {issuesData.riskSummary.flags.map((flag) => (
+                  <li
+                    key={flag.id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs"
+                  >
+                    <div>
+                      <span className="font-mono font-semibold text-slate-900">
+                        {flag.rule_code}
+                      </span>
+                      <span className="ml-2 font-mono text-slate-600">
+                        ({flag.severity} · +{flag.score} pts)
+                      </span>
+                      <p className="mt-1 text-slate-700">{flag.reason}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      ) : (
+        <>
+
+      {/* 3-Way Matching Panel: PO vs GRN vs Invoice Side-by-Side */}
+      <section className="rounded-lg border border-slate-200 bg-white p-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
+          <div className="flex items-center gap-2.5">
+            <GitCompare className="h-5 w-5 text-slate-700" aria-hidden="true" />
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">
+                3-Way Matching Comparison (PO vs GRN vs Invoice)
+              </h3>
+              <p className="text-xs text-slate-500">
+                {matchResult
+                  ? `Tolerance: ±${matchResult.qty_tolerance_percent}% qty · ±${matchResult.price_tolerance_percent}% price · Evaluated ${new Date(
+                      matchResult.evaluated_at
+                    ).toLocaleString()}`
+                  : 'Run 3-way matching to compare PO, summed GRNs, and Invoice values.'}
+              </p>
+            </div>
+          </div>
+
+          {matchResult && (
+            <div className="flex items-center gap-3">
+              {matchResult.status === 'MATCHED' ? (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
+                  <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                  MATCHED
+                </span>
+              ) : matchResult.status === 'MISMATCH' ? (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-800">
+                  <AlertCircle className="h-4 w-4" aria-hidden="true" />
+                  MISMATCH · ON_HOLD
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                  <PauseCircle className="h-4 w-4" aria-hidden="true" />
+                  HOLD · ON_HOLD
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {!matchResult ? (
+          <div className="py-6 text-sm text-slate-600">
+            No 3-way match evaluation has been stored for this invoice yet.
+            {canRunMatch && ' Click "Run 3-Way Match" above or verify the extracted invoice fields to run automatically.'}
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs font-semibold text-slate-600">
+                    <th className="py-2.5 pr-4">Field</th>
+                    <th className="py-2.5 px-3">
+                      Purchase Order ({matchResult.compared_values.poNumber || 'None'})
+                    </th>
+                    <th className="py-2.5 px-3">
+                      Goods Receipt ({matchResult.compared_values.grnCount} GRN
+                      {matchResult.compared_values.grnCount === 1 ? '' : 's'})
+                    </th>
+                    <th className="py-2.5 pl-3">
+                      Invoice ({invoice.invoice_number || `#${invoice.id}`})
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {cells.map((cell) => {
+                    const cellHighlight = cell.mismatch
+                      ? 'bg-rose-50 text-rose-900 font-semibold border border-rose-200'
+                      : 'text-slate-800';
+
+                    return (
+                      <tr key={cell.field}>
+                        <td className="py-3 pr-4 text-xs font-semibold text-slate-700">
+                          {cell.label}
+                        </td>
+                        <td className={`py-3 px-3 font-mono text-xs tabular-nums ${cell.mismatch ? 'bg-rose-50/70 text-rose-900' : 'text-slate-700'}`}>
+                          {cell.poValue}
+                        </td>
+                        <td className={`py-3 px-3 font-mono text-xs tabular-nums ${cell.mismatch && cell.field === 'quantity' ? 'bg-rose-50 text-rose-900 font-semibold' : 'text-slate-700'}`}>
+                          {cell.grnValue}
+                        </td>
+                        <td className={`py-3 pl-3 font-mono text-xs tabular-nums ${cellHighlight}`}>
+                          {cell.invoiceValue}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {matchResult.compared_values.grns && matchResult.compared_values.grns.length > 0 && (
+              <div className="text-xs text-slate-600">
+                <span className="font-semibold text-slate-700">GRN Receipts Aggregated: </span>
+                {matchResult.compared_values.grns
+                  .map(
+                    (g) =>
+                      `${g.grnNumber} (${g.quantityReceived} ${g.unit} on ${new Date(
+                        g.receivedAt
+                      ).toLocaleDateString()})`
+                  )
+                  .join(' + ')}
+              </div>
+            )}
+
+            {/* Exact match / mismatch reasons below */}
+            <div
+              className={`rounded-md border px-4 py-3 text-sm ${
+                matchResult.status === 'MATCHED'
+                  ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
+                  : matchResult.status === 'MISMATCH'
+                  ? 'border-rose-200 bg-rose-50/80 text-rose-900'
+                  : 'border-amber-200 bg-amber-50/80 text-amber-900'
+              }`}
+            >
+              <p className="text-xs font-semibold">
+                {matchResult.status === 'MATCHED'
+                  ? '3-Way Match Result: MATCHED (Human payment approval still required separately)'
+                  : `3-Way Match Reasons (${matchResult.status} — Invoice placed ON_HOLD; payment never auto-released):`}
+              </p>
+              <ul className="mt-1.5 list-disc space-y-1 pl-5 text-xs">
+                {matchResult.reasons.map((r, idx) => (
+                  <li key={idx}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Duplicate Detection Panel */}
+      <section className="rounded-lg border border-slate-200 bg-white p-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
+          <div className="flex items-center gap-2.5">
+            <Copy className="h-5 w-5 text-slate-700" aria-hidden="true" />
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">
+                Duplicate Invoice Detection
+              </h3>
+              <p className="text-xs text-slate-500">
+                Normalized Number:{' '}
+                <span className="font-mono font-semibold text-slate-700">
+                  {duplicates?.normalizedInvoiceNumber || invoice.normalized_invoice_number || '—'}
+                </span>{' '}
+                · Threshold:{' '}
+                <span className="font-mono tabular-nums">
+                  {duplicates ? `${Math.round(duplicates.threshold * 100)}%` : '65%'}
+                </span>{' '}
+                · Never auto-rejects (human decision required)
+              </p>
+            </div>
+          </div>
+
+          {duplicates?.hasPossibleDuplicates ? (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-orange-300 bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-800">
+              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              POSSIBLE DUPLICATE · {Math.round(duplicates.highestScore * 100)}% Similarity
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              No High-Similarity Duplicates Found
+            </span>
+          )}
+        </div>
+
+        {!duplicates || !duplicates.hasPossibleDuplicates ? (
+          <p className="pt-4 text-sm text-slate-600">
+            No existing invoices exceeded the duplicate similarity threshold across normalized invoice number, supplier, date, amount, line items, and IRN.
+          </p>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="py-2 pr-3">Candidate Invoice</th>
+                  <th className="py-2 pr-3">Supplier</th>
+                  <th className="py-2 pr-3">Date</th>
+                  <th className="py-2 pr-3 text-right">Total</th>
+                  <th className="py-2 pr-3 text-right">Similarity</th>
+                  <th className="py-2 pr-3">Reasons</th>
+                  <th className="py-2 text-right">Compare</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {duplicates.possibleDuplicates.map((cand) => (
+                  <tr key={cand.candidateInvoiceId}>
+                    <td className="py-3 pr-3 font-mono font-semibold text-slate-900">
+                      {cand.candidateInvoiceNumber || `#${cand.candidateInvoiceId}`}
+                      <span className="block font-sans text-xs font-normal text-slate-500">
+                        Normalized: {cand.candidateNormalizedNumber || '—'}
+                      </span>
+                    </td>
+                    <td className="py-3 pr-3 text-slate-700">
+                      {cand.candidateSupplierName || 'Unknown'}
+                    </td>
+                    <td className="py-3 pr-3 font-mono text-slate-600 tabular-nums">
+                      {cand.candidateInvoiceDate || '—'}
+                    </td>
+                    <td className="py-3 pr-3 text-right font-mono font-medium text-slate-900 tabular-nums">
+                      {cand.candidateTotal !== null ? `Rs ${cand.candidateTotal.toFixed(2)}` : '—'}
+                    </td>
+                    <td className="py-3 pr-3 text-right font-mono font-bold text-orange-700 tabular-nums">
+                      {Math.round(cand.similarityScore * 100)}%
+                    </td>
+                    <td className="py-3 pr-3 text-slate-700">
+                      <ul className="list-disc space-y-0.5 pl-4">
+                        {cand.reasons.map((reason, idx) => (
+                          <li key={idx}>{reason}</li>
+                        ))}
+                      </ul>
+                    </td>
+                    <td className="py-3 text-right">
+                      <Link
+                        to={`/invoices/${cand.candidateInvoiceId}`}
+                        className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                      >
+                        View #{cand.candidateInvoiceId}
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* Split View: Original Document Preview + Extracted Fields Verification */}
       <div className="grid gap-6 lg:grid-cols-12">
-        {/* Left pane: Original Document Preview */}
         <section className="flex flex-col rounded-lg border border-slate-200 bg-white lg:col-span-5">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
             <div className="flex items-center gap-2">
@@ -474,7 +1190,7 @@ export function InvoiceVerifyPage() {
                   No uploaded binary preview available
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  Historical sample rows seeded in Phase 1 do not include an uploaded PDF file.
+                  Seeded sample records do not include a separate uploaded PDF on disk.
                   Upload a PDF, PNG, or JPG from the Invoices page to view OCR side-by-side.
                 </p>
               </div>
@@ -493,7 +1209,6 @@ export function InvoiceVerifyPage() {
           </div>
         </section>
 
-        {/* Right pane: Extracted Fields & Verification Form */}
         <section className="rounded-lg border border-slate-200 bg-white lg:col-span-7">
           <div className="border-b border-slate-200 bg-amber-50/70 px-5 py-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -511,7 +1226,7 @@ export function InvoiceVerifyPage() {
               </div>
             </div>
             <p className="mt-1 text-xs text-amber-800">
-              Fields below {thresholdPct}% confidence or marked MISSING are highlighted for human review. Original extracted values are preserved for audit comparison.
+              Confirming verification saves corrected fields and automatically runs 3-way matching against PO &amp; GRNs.
             </p>
           </div>
 
@@ -885,11 +1600,11 @@ export function InvoiceVerifyPage() {
               {!canVerify ? (
                 <div className="flex items-center gap-2 text-xs text-slate-600">
                   <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />
-                  <span>View-only mode: only AP Employee can confirm invoice verification.</span>
+                  <span>View-only verification form: only AP Employee can confirm extracted fields.</span>
                 </div>
               ) : (
                 <span className="text-xs text-slate-500">
-                  Confirming saves corrected fields, preserves original extraction, and logs the diff to the audit trail.
+                  Confirming saves corrected fields, logs the diff, and auto-runs 3-way matching.
                 </span>
               )}
 
@@ -900,13 +1615,18 @@ export function InvoiceVerifyPage() {
                   className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:opacity-60 whitespace-nowrap"
                 >
                   <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                  {saving ? 'Verifying...' : 'Confirm & Verify Invoice'}
+                  {saving ? 'Verifying & Matching...' : 'Confirm, Verify & Match'}
                 </button>
               )}
             </div>
           </form>
         </section>
       </div>
+        </>
+      )}
+
+      {/* AI Audit Copilot scoped to this invoice */}
+      <CopilotPanel invoiceId={invoice.id} invoiceNumber={invoice.invoice_number} />
     </div>
   );
 }

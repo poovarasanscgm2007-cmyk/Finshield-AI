@@ -26,8 +26,8 @@ export function DashboardLayout() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <SampleDataBanner />
 
-      <div className="flex min-h-[calc(100vh-41px)]">
-        <aside className="w-64 shrink-0 border-r border-slate-200 bg-white">
+      <div className="flex min-h-[calc(100vh-41px)] flex-col md:flex-row">
+        <aside className="w-full shrink-0 border-b border-slate-200 bg-white md:w-64 md:border-b-0 md:border-r">
           <div className="border-b border-slate-200 px-5 py-4">
             <div className="flex items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white">

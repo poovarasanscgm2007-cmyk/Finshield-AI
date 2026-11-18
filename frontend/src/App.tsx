@@ -4,11 +4,16 @@ import { ProtectedRoute } from './components/ProtectedRoute.tsx';
 import { AuthProvider } from './context/AuthContext.tsx';
 import { ApprovalsPage } from './pages/ApprovalsPage.tsx';
 import { AuditLogPage } from './pages/AuditLogPage.tsx';
+import { DemoGuidePage } from './pages/DemoGuidePage.tsx';
+import { GrnsPage } from './pages/GrnsPage.tsx';
+import { InvestigationsPage } from './pages/InvestigationsPage.tsx';
 import { InvoicesPage } from './pages/InvoicesPage.tsx';
 import { InvoiceVerifyPage } from './pages/InvoiceVerifyPage.tsx';
 import { LoginPage } from './pages/LoginPage.tsx';
 import { OverviewPage } from './pages/OverviewPage.tsx';
 import { PlaceholderModulePage } from './pages/PlaceholderModulePage.tsx';
+import { SupplierGraphPage } from './pages/SupplierGraphPage.tsx';
+import { SuppliersPage } from './pages/SuppliersPage.tsx';
 
 export default function App() {
   return (
@@ -36,6 +41,17 @@ export default function App() {
             />
             <Route path="/invoices" element={<InvoicesPage />} />
             <Route path="/invoices/:id" element={<InvoiceVerifyPage />} />
+            <Route path="/investigations" element={<InvestigationsPage />} />
+            <Route path="/supplier-graph" element={<SupplierGraphPage />} />
+            <Route path="/suppliers" element={<SuppliersPage />} />
+            <Route
+              path="/demo-guide"
+              element={
+                <ProtectedRoute allowedRoles={['ADMIN', 'FINANCE_MANAGER']}>
+                  <DemoGuidePage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/purchase-orders"
               element={
@@ -49,8 +65,8 @@ export default function App() {
                 >
                   <PlaceholderModulePage
                     title="Purchase Orders Ledger"
-                    description="Full PO management and 3-way matching integration. Use Approvals & Guard to submit PO price change requests in Phase 2."
-                    scheduledPhase="Phase 3"
+                    description="Full PO management and 3-way matching integration. Use Approvals & Guard to submit PO price change requests."
+                    scheduledPhase="Upcoming"
                   />
                 </ProtectedRoute>
               }
@@ -59,26 +75,11 @@ export default function App() {
               path="/grns"
               element={
                 <ProtectedRoute allowedRoles={['WAREHOUSE_EMPLOYEE', 'FINANCE_MANAGER', 'ADMIN']}>
-                  <PlaceholderModulePage
-                    title="Goods Receipt Notes (GRN)"
-                    description="Warehouse GRN entry and multi-GRN quantity aggregation."
-                    scheduledPhase="Phase 3"
-                  />
+                  <GrnsPage />
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/risk"
-              element={
-                <ProtectedRoute allowedRoles={['FINANCE_MANAGER', 'ADMIN']}>
-                  <PlaceholderModulePage
-                    title="Risk Alerts & GST Compliance"
-                    description="3-way matching, GSTIN checksum & GSTR-2B checks, supplier graph, and AI Copilot."
-                    scheduledPhase="Phase 4+"
-                  />
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/risk" element={<Navigate to="/supplier-graph" replace />} />
             <Route
               path="/rules"
               element={
@@ -86,7 +87,7 @@ export default function App() {
                   <PlaceholderModulePage
                     title="Risk Rules Configuration"
                     description="Configure rule weights and matching tolerance thresholds."
-                    scheduledPhase="Phase 4+"
+                    scheduledPhase="Phase 6"
                   />
                 </ProtectedRoute>
               }
@@ -98,7 +99,7 @@ export default function App() {
                   <PlaceholderModulePage
                     title="User & Role Management"
                     description="Manage organization users and RBAC role assignments."
-                    scheduledPhase="Phase 4+"
+                    scheduledPhase="Phase 6"
                   />
                 </ProtectedRoute>
               }
