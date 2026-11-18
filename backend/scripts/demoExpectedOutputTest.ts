@@ -125,12 +125,23 @@ async function main(): Promise<void> {
     assert.equal(pipelineRes.status, 200);
 
     // 1. INV-101 is ON_HOLD with qty mismatch reason "Invoice qty 100 exceeds received qty 80 by 20"
-    const invDetailRes = await apiJson<{
-      invoice: { id: number; status: string; risk_level: string; risk_score: string | number };
-      riskFlags: Array<{ rule_code: string; reason: string; metadata: Record<string, unknown> }>;
-    }>(baseUrl, `/api/invoices/${inv101.id}`, { token: fmToken });
+    const [invDetailRes, invRiskRes] = await Promise.all([
+      apiJson<{
+        invoice: { id: number; status: string; risk_level: string; risk_score: string | number };
+      }>(baseUrl, `/api/invoices/${inv101.id}`, { token: fmToken }),
+      apiJson<{
+        riskSummary: {
+          riskScore: number;
+          riskLevel: string;
+          itcAtRisk: number;
+          flags: Array<{ rule_code: string; reason: string; metadata: Record<string, unknown> }>;
+        };
+      }>(baseUrl, `/api/invoices/${inv101.id}/investigations`, { token: fmToken }),
+    ]);
     assert.equal(invDetailRes.status, 200);
+    assert.equal(invRiskRes.status, 200);
     assert.equal(invDetailRes.data.invoice.status, 'ON_HOLD', 'INV-101 status must be ON_HOLD');
+    const persistedFlags = invRiskRes.data.riskSummary.flags;
 
     const matchRes = await apiJson<{
       matchResult: { status: string; reasons: string[] } | null;
@@ -166,11 +177,11 @@ async function main(): Promise<void> {
     console.log('[PASS] 2. PO-101 unapproved price change 500 -> 700 by Employee 102 flagged');
 
     // 3. Supplier A historical repeated extra charges (500, 700, 1000) detected
-    const overbillingFlag = invDetailRes.data.riskFlags.find(
-      (f) => f.rule_code === 'REPEATED_EXTRA_CHARGES'
+    const overbillingFlag = persistedFlags.find(
+      (f) => f.rule_code === 'HISTORICAL_OVERBILLING'
     );
-    assert.ok(overbillingFlag, 'REPEATED_EXTRA_CHARGES flag must exist on INV-101');
-    const amounts = (overbillingFlag.metadata?.amounts as number[]) || [];
+    assert.ok(overbillingFlag, 'HISTORICAL_OVERBILLING flag must exist on INV-101');
+    const amounts = (overbillingFlag.metadata?.uniqueExtraChargeAmounts as number[]) || [];
     for (const expectedAmt of [500, 700, 1000]) {
       assert.ok(
         amounts.includes(expectedAmt),
@@ -206,7 +217,7 @@ async function main(): Promise<void> {
     console.log(`[PASS] 4. Supplier graph detects SHARED_BANK (${sharedBankEdge.sharedValue}) between SUP-A & SUP-B`);
 
     // 5. INV-101 missing in GSTR-2B with ITC at risk 9000
-    const gstrFlag = invDetailRes.data.riskFlags.find((f) => f.rule_code === 'GSTR2B_MISSING');
+    const gstrFlag = persistedFlags.find((f) => f.rule_code === 'GSTR2B_MISSING');
     assert.ok(gstrFlag, 'GSTR2B_MISSING flag must exist on INV-101');
     assert.equal(pipelineRes.data.pipeline.itcAtRisk, 9000, 'Expected exact ITC at risk = 9000');
     console.log('[PASS] 5. INV-101 missing in GSTR-2B with ITC at risk = Rs 9,000');
@@ -307,7 +318,7 @@ async function main(): Promise<void> {
       Boolean(sharedBankEdge),
       Boolean(gstrFlag),
       Boolean(
-        invDetailRes.data.riskFlags.some((f) => f.rule_code === 'POSSIBLE_DUPLICATE') ||
+        persistedFlags.some((f) => f.rule_code === 'DUPLICATE_INVOICE') ||
           (await apiJson<{ hasPossibleDuplicates: boolean }>(
             baseUrl,
             `/api/invoices/${inv101.id}/duplicates`,
