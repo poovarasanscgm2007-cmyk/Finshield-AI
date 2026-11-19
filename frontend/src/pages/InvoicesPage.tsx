@@ -14,6 +14,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
+import { getApiUrl } from '../utils/api.ts';
 
 interface InvoiceListItem {
   id: number;
@@ -203,7 +204,7 @@ export function InvoicesPage() {
     formData.append('file', file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/invoices/upload');
+    xhr.open('POST', getApiUrl('/api/invoices/upload'));
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     }

@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -11,14 +12,24 @@ async function startServer(): Promise<void> {
   const app = createApiApp();
   attachApiErrorHandlers(app);
 
-  const port = 3000;
+  const port = Number(process.env.PORT) || 3000;
 
   if (process.env.NODE_ENV === 'production') {
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      app.get('/', (_req, res) => {
+        res.status(200).json({
+          status: 'ok',
+          service: 'finshield-ai-backend',
+          message: 'FINSHIELD AI backend service is running. Connect your frontend via VITE_API_URL or visit /api/health.',
+        });
+      });
+    }
   } else {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -28,7 +39,7 @@ async function startServer(): Promise<void> {
   }
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`FINSHIELD AI preview server running on http://0.0.0.0:${port}`);
+    console.log(`FINSHIELD AI server running on http://0.0.0.0:${port}`);
   });
 }
 

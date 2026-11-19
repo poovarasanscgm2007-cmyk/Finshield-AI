@@ -29,6 +29,7 @@ import {
 import { ROLE_CAPABILITIES, ROLE_LABELS } from '../auth/permissions.ts';
 import { CopilotPanel } from '../components/CopilotPanel.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
+import { getApiUrl } from '../utils/api.ts';
 
 interface HealthResponse {
   status: string;
@@ -105,7 +106,7 @@ export function OverviewPage() {
     setError(null);
     try {
       const [healthRes, dashboardRes] = await Promise.all([
-        fetch('/api/health', { headers: { Accept: 'application/json' } }).then(async (r) => {
+        fetch(getApiUrl('/api/health'), { headers: { Accept: 'application/json' } }).then(async (r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return (await r.json()) as HealthResponse;
         }),

@@ -1,5 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { UserRole } from '../auth/permissions.ts';
+import { getApiUrl } from '../utils/api.ts';
 
 export interface AuthUser {
   id: number;
@@ -57,7 +58,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers.set('Authorization', `Bearer ${token}`);
       }
 
-      const response = await fetch(url, { ...options, headers });
+      const fullUrl = getApiUrl(url);
+      const response = await fetch(fullUrl, { ...options, headers });
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -89,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const res = await fetch('/api/auth/me', {
+        const res = await fetch(getApiUrl('/api/auth/me'), {
           headers: {
             Accept: 'application/json',
             Authorization: `Bearer ${token}`,
@@ -123,7 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token, logout]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const response = await fetch('/api/auth/login', {
+    const response = await fetch(getApiUrl('/api/auth/login'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

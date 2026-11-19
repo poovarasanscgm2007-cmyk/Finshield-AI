@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { CopilotPanel } from '../components/CopilotPanel.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
+import { getApiUrl } from '../utils/api.ts';
 import { InvestigationStatusTag } from './InvestigationsPage.tsx';
 import { MatchAndStatusBadges } from './InvoicesPage.tsx';
 
@@ -345,7 +346,7 @@ export function InvoiceVerifyPage() {
 
     async function fetchPreview() {
       try {
-        const res = await fetch(`/api/invoices/${id}/file`, {
+        const res = await fetch(getApiUrl(`/api/invoices/${id}/file`), {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) return;

@@ -15,15 +15,58 @@ import { purchaseOrdersRouter } from './routes/purchaseOrders.ts';
 import { suppliersRouter } from './routes/suppliers.ts';
 import { systemRouter } from './routes/system.ts';
 
+function resolveCorsOrigin(): cors.CorsOptions['origin'] {
+  const rawOrigin = env.CORS_ORIGIN ? env.CORS_ORIGIN.trim() : '*';
+  if (!rawOrigin || rawOrigin === '*') {
+    // Reflect request origin so credentials (Authorization / Bearer tokens) are allowed
+    return true;
+  }
+
+  const allowedList = rawOrigin
+    .split(',')
+    .map((item) => item.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+  return (origin, callback) => {
+    // Allow non-browser requests (e.g. mobile apps, curl, server-side cron)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const cleanOrigin = origin.trim().replace(/\/+$/, '');
+
+    // Wildcard in allowed list or exact origin match
+    if (allowedList.includes('*') || allowedList.includes(cleanOrigin)) {
+      return callback(null, true);
+    }
+
+    // Match Vercel production or preview deployments if vercel domain is configured
+    const isVercelConfigured = allowedList.some((o) => o.includes('.vercel.app'));
+    if (isVercelConfigured && (cleanOrigin.endsWith('.vercel.app') || cleanOrigin.includes('.vercel.app'))) {
+      return callback(null, true);
+    }
+
+    // Allow local development and test origins
+    if (cleanOrigin.startsWith('http://localhost:') || cleanOrigin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS error: Origin ${origin} is not allowed.`));
+  };
+}
+
 export function createApiApp(): Express {
   const app = express();
 
-  app.use(
-    cors({
-      origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN,
-      credentials: true,
-    })
-  );
+  const corsOptions: cors.CorsOptions = {
+    origin: resolveCorsOrigin(),
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  };
+
+  app.use(cors(corsOptions));
+  app.options('*', cors(corsOptions));
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
 

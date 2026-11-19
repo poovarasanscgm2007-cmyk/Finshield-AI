@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: finshield-ai-backend
+    env: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm run start:backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: https://finshield-ai-mocha.vercel.app
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: LLM_API_KEY
+        sync: false
+      - key: EXTRACTION_CONFIDENCE_THRESHOLD
+        value: "0.80"
+      - key: UPLOAD_DIR
+        value: uploads

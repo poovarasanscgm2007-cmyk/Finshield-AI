@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "tsx server.ts",
+    "start:backend": "tsx backend/src/server.ts",
     "migrate": "tsx database/migrate.ts",
     "seed": "tsx database/seed.ts",
     "generate-samples": "tsx sample-data/generateSampleInvoices.ts",

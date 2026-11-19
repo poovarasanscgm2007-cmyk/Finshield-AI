@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { UserRole } from '../auth/permissions.ts';
 import { useAuth } from '../context/AuthContext.tsx';
+import { getApiUrl } from '../utils/api.ts';
 
 interface InvestigationItem {
   id: number;
@@ -350,7 +351,7 @@ export function InvestigationsPage() {
         if (evidenceNote.trim()) {
           form.append('note', evidenceNote.trim());
         }
-        const res = await fetch(`/api/investigations/${detail.investigation.id}/evidence`, {
+        const res = await fetch(getApiUrl(`/api/investigations/${detail.investigation.id}/evidence`), {
           method: 'POST',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: form,
@@ -404,7 +405,7 @@ export function InvestigationsPage() {
     if (!detail || !token) return;
     try {
       const res = await fetch(
-        `/api/investigations/${detail.investigation.id}/evidence/${ev.id}/file`,
+        getApiUrl(`/api/investigations/${detail.investigation.id}/evidence/${ev.id}/file`),
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
