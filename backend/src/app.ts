@@ -40,9 +40,8 @@ function resolveCorsOrigin(): cors.CorsOptions['origin'] {
       return callback(null, true);
     }
 
-    // Match Vercel production or preview deployments if vercel domain is configured
-    const isVercelConfigured = allowedList.some((o) => o.includes('.vercel.app'));
-    if (isVercelConfigured && (cleanOrigin.endsWith('.vercel.app') || cleanOrigin.includes('.vercel.app'))) {
+    // Always permit Vercel production and preview deployment domains (*.vercel.app)
+    if (cleanOrigin.endsWith('.vercel.app') || cleanOrigin.includes('.vercel.app')) {
       return callback(null, true);
     }
 

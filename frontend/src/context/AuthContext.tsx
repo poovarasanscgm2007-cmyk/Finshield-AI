@@ -11,11 +11,20 @@ export interface AuthUser {
   department: string;
 }
 
+export interface RegisterParams {
+  email: string;
+  password: string;
+  name?: string;
+  role?: UserRole;
+  department?: string;
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  register: (params: RegisterParams) => Promise<void>;
   logout: () => void;
   apiFetch: <T = unknown>(url: string, options?: RequestInit) => Promise<T>;
 }
@@ -153,8 +162,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(payload.user);
   }, []);
 
+  const register = useCallback(async (params: RegisterParams) => {
+    const targetUrl = getApiUrl('/api/auth/register');
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(params),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message =
+        (data as { message?: string; error?: string }).message ||
+        (data as { error?: string }).error ||
+        'Registration failed. Please try again.';
+      throw new Error(message);
+    }
+
+    const payload = data as { token: string; user: AuthUser };
+    try {
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, payload.token);
+    } catch {
+      // Ignore storage errors
+    }
+    setToken(payload.token);
+    setUser(payload.user);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, apiFetch }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, logout, apiFetch }}>
       {children}
     </AuthContext.Provider>
   );

@@ -10,7 +10,22 @@
  */
 export function getApiUrl(path: string): string {
   const rawBase = import.meta.env.VITE_API_URL;
-  const baseUrl = typeof rawBase === 'string' ? rawBase.trim().replace(/\/+$/, '') : '';
+  let baseUrl = typeof rawBase === 'string' ? rawBase.trim().replace(/\/+$/, '') : '';
+
+  // Prevent HTTP -> HTTPS 301/302 redirects in production which downgrade POST requests to GET
+  if (
+    baseUrl.startsWith('http://') &&
+    !baseUrl.includes('localhost') &&
+    !baseUrl.includes('127.0.0.1')
+  ) {
+    baseUrl = baseUrl.replace(/^http:\/\//i, 'https://');
+  }
+
+  // If user configured VITE_API_URL ending with /api and the path also starts with /api, avoid /api/api duplication
+  if (baseUrl.endsWith('/api') && path.startsWith('/api')) {
+    baseUrl = baseUrl.slice(0, -4);
+  }
+
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   return baseUrl ? `${baseUrl}${cleanPath}` : cleanPath;
 }
