@@ -113,7 +113,7 @@ export async function seedDatabase(externalPool?: Pool): Promise<void> {
     const warehouseUserId = userByCode.get('EMP-103')!;
 
     // 2. Seed Supplier A and Supplier B sharing the same bank_identifier (Sample data)
-    const sharedBankId = 'HDFC0001234-ACCT-998877-SAMPLE';
+    const sharedBankId = 'HDFC0001234-8877-SAMPLE';
     const suppliersRes = await client.query<{
       id: number;
       supplier_code: string;

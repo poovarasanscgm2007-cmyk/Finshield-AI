@@ -200,7 +200,7 @@ async function generate(): Promise<void> {
     supplierName: 'Supplier A - Timber & Wood Traders (Sample)',
     supplierGstin: '27AABCS5678C1Z9',
     supplierAddress: 'Plot 14, Timber Market MIDC, Pune, Maharashtra 411026 (Sample)',
-    bankIdentifier: 'HDFC0001234-ACCT-998877-SAMPLE',
+    bankIdentifier: 'HDFC0001234-8877-SAMPLE',
     buyerName: 'ABC Manufacturing (Sample)',
     buyerGstin: '27AABCA1234B1ZH',
     lines: [
@@ -229,7 +229,7 @@ async function generate(): Promise<void> {
     supplierName: 'Supplier A - Timber & Wood Traders (Sample)',
     supplierGstin: '27AABCS5678C1Z9',
     supplierAddress: 'Plot 14, Timber Market MIDC, Pune, Maharashtra 411026 (Sample)',
-    bankIdentifier: 'HDFC0001234-ACCT-998877-SAMPLE',
+    bankIdentifier: 'HDFC0001234-8877-SAMPLE',
     buyerName: 'ABC Manufacturing (Sample)',
     buyerGstin: '27AABCA1234B1ZH',
     lines: [
@@ -266,7 +266,7 @@ async function generate(): Promise<void> {
     supplierName: 'Supplier A - Timber & Wood Traders (Sample)',
     supplierGstin: '27AABCS5678C1Z9',
     supplierAddress: 'Plot 14, Timber Market MIDC, Pune, Maharashtra 411026 (Sample)',
-    bankIdentifier: 'HDFC0001234-ACCT-998877-SAMPLE',
+    bankIdentifier: 'HDFC0001234-8877-SAMPLE',
     buyerName: 'ABC Manufacturing (Sample)',
     buyerGstin: '27AABCA1234B1ZH',
     lines: [

@@ -11,13 +11,13 @@
       "supplier_code": "SUP-A",
       "name": "Supplier A - Timber & Wood Traders (Sample)",
       "gstin": "27AABCS5678C1Z9",
-      "bank_identifier": "HDFC0001234-ACCT-998877-SAMPLE"
+      "bank_identifier": "HDFC0001234-8877-SAMPLE"
     },
     {
       "supplier_code": "SUP-B",
       "name": "Supplier B - Deccan Packaging & Crates (Sample)",
       "gstin": "29AABCB9012D1Z0",
-      "bank_identifier": "HDFC0001234-ACCT-998877-SAMPLE"
+      "bank_identifier": "HDFC0001234-8877-SAMPLE"
     }
   ],
   "demo_records": {
